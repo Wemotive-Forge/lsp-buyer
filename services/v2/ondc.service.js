@@ -1,0 +1,3761 @@
+import { v4 as uuidv4 } from 'uuid';
+import config from "../../lib/config";
+import HttpRequest from "../../utils/HttpRequest";
+import { InitRequest, ConfirmRequest, SelectRequest } from '../../models'
+import { getProductsIncr, getProductUpdate } from "../../utils/v2/schemaMapping";
+import { domainNameSpace } from "../../utils/constants";
+import logger from '../../lib/logger'
+import { SearchRequest } from "../../models";
+import redisService from './redis.service.js'
+const BPP_ID = config.get("sellerConfig").BPP_ID
+const BPP_URI = config.get("sellerConfig").BPP_URI
+
+
+class OndcService {
+
+    async productSearch(payload = {}, req = {}) {
+        try {
+            // const {criteria = {}, payment = {}} = req || {};
+
+            logger.log('info', `[Ondc Service] search logistics payload : param >>:`, payload);
+
+            const order = payload;
+            const selectMessageId = payload.context.message_id;
+            this.postSearchRequest(order, selectMessageId)
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+            throw err;
+        }
+    }
+
+    async orderSelect(payload = {}, req = {}) {
+        try {
+            // const {criteria = {}, payment = {}} = req || {};
+
+            logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
+
+            // const order = payload.message.order;
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4();
+
+            let storeLocationEnd = {}
+            let totalProductValue = 0
+            let searchRequest = {}
+            // for (let items of payload.message.order.items) {
+            //     const product = await productService.getForOndc(items.id)
+            //     console.log("product---->", product);
+            //     totalProductValue += product.commonDetails.MRP
+            // }
+
+            let itemType = ''
+            let resultData;
+            let totalPrice = 0
+            let itemData = {};
+            for (let item of payload.message.order.items) {
+                resultData = await productService.getForOndc(item.id)
+                if (Object.keys(resultData).length > 0) {
+                    if (resultData?.commonDetails) {
+                        let price = resultData?.commonDetails?.MRP * item.quantity.count
+                        totalProductValue += price
+                    } else {
+                        let price = resultData?.MRP * item.quantity.count
+                        totalProductValue += price
+                    }
+                }
+            }
+
+            let org = await productService.getOrgForOndc(payload.message.order.provider.id);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+
+            if (org.providerDetail.storeDetails) {
+                storeLocationEnd = {
+                    gps: `${org.providerDetail.storeDetails.location.lat},${org.providerDetail.storeDetails.location.long}`,
+                    address: {
+                        area_code: org.providerDetail.storeDetails.address.area_code
+                    }
+                }
+            }
+
+            let category = domainNameSpace.find((cat) => {
+                return cat.domain === payload.context.domain
+            })
+            if (onNetworkLogistics) {
+                searchRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "country": "IND",
+                        "city": payload.context.city,
+                        "action": "search",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "transaction_id": uuidv4(),
+                        "message_id": logisticsMessageId,
+                        "timestamp": new Date(),
+                        "ttl": "PT30S"
+                    },
+                    "message": {
+                        "intent": {
+                            "category": {
+                                "id": org.providerDetail.storeDetails.logisticsDeliveryType ?? 'Immediate Delivery'
+                            },
+                            "provider": {
+                                "time": { //TODO: fix this from store timing
+                                    "days": "1,2,3,4,5,6,7",
+                                    "schedule": {
+                                        "holidays": []
+                                    },
+                                    "duration": "PT30M",
+                                    "range": {
+                                        "start": "1100",
+                                        "end": "2200"
+                                    }
+                                },
+                            },
+                            "fulfillment": {
+                                "type": "Delivery",
+                                "start": {
+                                    "location": storeLocationEnd
+                                },
+                                "end": payload.message.order.fulfillments[0].end
+                            },
+                            "payment": {
+                                "type": "POST-FULFILLMENT",
+                                "@ondc/org/collection_amount": `${totalProductValue}`
+                            },
+                            "@ondc/org/payload_details": { //TODO: This is hard coded
+                                "weight": {
+                                    "unit": "kilogram",
+                                    "value": 5
+                                },
+                                "dimensions": {
+                                    "length": {
+                                        "unit": "centimeter",
+                                        "value": 15
+                                    },
+                                    "breadth": {
+                                        "unit": "centimeter",
+                                        "value": 10
+                                    },
+                                    "height": {
+                                        "unit": "centimeter",
+                                        "value": 10
+                                    }
+                                },
+                                "category": category.name,
+                                "value": {
+                                    "currency": "INR",
+                                    "value": `${totalPrice}`
+                                },
+                                "dangerous_goods": false
+                            }
+                        }
+                    }
+                }
+            }
+
+            // const searchRequest = {
+            //         "context": {
+            //             "domain": "nic2004:60232",
+            //             "country": "IND",
+            //             "city": payload.context.city,
+            //             "action": "search",
+            //             "core_version": "1.2.0",
+            //             "bap_id": config.get("sellerConfig").BPP_ID,
+            //             "bap_uri": config.get("sellerConfig").BAP_URI,
+            //             "transaction_id": uuidv4(),
+            //             "message_id": logisticsMessageId,
+            //             "timestamp": new Date(),
+            //             "ttl": "PT30S"
+            //         },
+            //     "message": {
+            //         "intent": {
+            //             "category": {
+            //                 "id": "Immediate Delivery"
+            //             },
+            //             "provider": {
+            //                 "time": {
+            //                     "days": "1,2,3,4,5,6,7",
+            //                     "schedule": {
+            //                         "holidays": []
+            //                     },
+            //                     "duration": "PT30M",
+            //                     "range": {
+            //                         "start": "1100",
+            //                         "end": "2200"
+            //                     }
+            //                 }
+            //             },
+            //             "fulfillment": {
+            //                 "type": "Delivery",
+            //                 "start": {
+            //                     "location": {
+            //                         "gps": "30.7467833, 76.642853",
+            //                         "address": {
+            //                             "area_code": "140301"
+            //                         }
+            //                     }
+            //                 },
+            //                 "end": {
+            //                     "location": {
+            //                         "gps": "30.744600, 76.652496",
+            //                         "address": {
+            //                             "area_code": "140301"
+            //                         }
+            //                     }
+            //                 }
+            //             },
+            //             "payment": {
+            //                 "type": "ON-FULFILLMENT",
+            //                 "@ondc/org/collection_amount": "300.00"
+            //             },
+            //             "@ondc/org/payload_details": {
+            //                 "weight": {
+            //                     "unit": "kilogram",
+            //                     "value": 5
+            //                 },
+            //                 "dimensions": {
+            //                     "length": {
+            //                         "unit": "centimeter",
+            //                         "value": 15
+            //                     },
+            //                     "breadth": {
+            //                         "unit": "centimeter",
+            //                         "value": 10
+            //                     },
+            //                     "height": {
+            //                         "unit": "centimeter",
+            //                         "value": 10
+            //                     }
+            //                 },
+            //                 "category": "Grocery",
+            //                 "value": {
+            //                     "currency": "INR",
+            //                     "value": "300.00"
+            //                 },
+            //                 "dangerous_goods": false
+            //             }
+            //         }
+            //     }
+            // }
+            //process select request and send it to protocol layer
+            this.postSelectRequest(searchRequest, logisticsMessageId, selectMessageId, onNetworkLogistics)
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+            throw err;
+        }
+    }
+    async createLspOrder1(payload = {}, req = {}) {
+        try {
+            logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
+    
+            const logisticsMessageId = uuidv4();
+            const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
+    
+            let searchRequest = {};
+    
+            const onNetworkLogistics = true;
+    
+            if (onNetworkLogistics) {
+                searchRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "country": "IND",
+                        "city": 'std:080', //TODO: map it using delivery address
+                        "action": "search",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "transaction_id": uuidv4(),
+                        "message_id": logisticsMessageId,
+                        "timestamp": new Date(),
+                        "ttl": "PT30S"
+                    },
+                    "message": {
+                        "intent": {
+                            "category": {
+                                "id": payload.deliveryOption
+                            },
+                            "provider": {
+                                "time": { //TODO: fix this from store timing
+                                    "days": "1,2,3,4,5,6,7",
+                                    "schedule": {
+                                        "holidays": []
+                                    },
+                                    "duration": "PT30M",
+                                    "range": {
+                                        "start": "1100",
+                                        "end": "2200"
+                                    }
+                                },
+                            },
+                            "fulfillment": {
+                                "type": "Delivery",
+                                "start": { location: payload.start.location },
+                                "end": { location: payload.end.location }
+                            },
+                            "payment": {
+                                "type": payload.payment_method,
+                                "@ondc/org/collection_amount": payload.orderValue
+                            },
+                            "@ondc/org/payload_details": payload.order_details
+                        }
+                    }
+                };
+            }
+            console.log("search payload completed");
+    
+            await redisService.set(`${logisticsMessageId}_request`, 'ref-logistics-app-stage.ondc.org'); //TODO: take it from config
+            console.log("set redis cache");
+    
+            try {
+                let headers = {};
+                let httpRequest = new HttpRequest(
+                    config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    `/search`,
+                    'POST',
+                    searchRequest,
+                    headers
+                );
+                await httpRequest.send();
+    
+                const lspOnSearchPromise = new Promise(async (resolve, reject) => {
+                    const interval = setInterval(async () => {
+                        const lspOnSearch = await redisService.get(`${logisticsMessageId}_response`);
+    
+                        if (lspOnSearch) {
+                            clearInterval(interval);
+                            console.log("on_search found--->", lspOnSearch);
+    
+                            const contextTimeStamp = new Date();
+                            const logistics = JSON.parse(lspOnSearch);
+    
+                            let fulfillment = logistics.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
+                                return element.type === 'Delivery';
+                            });
+                            let deliveryType = logistics.message?.catalog["bpp/providers"][0].items.find((element) => {
+                                return element.category_id === payload.deliveryOption && element.fulfillment_id === fulfillment.id;
+                            });
+    
+                            let initRequest = {
+                                "context": {
+                                    "domain": "nic2004:60232",
+                                    "country": "IND",
+                                    "city": 'std:080', //TODO: take city from retail context
+                                    "action": "init",
+                                    "core_version": "1.2.0",
+                                    "bap_id": config.get("sellerConfig").BPP_ID,
+                                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                                    "bpp_id": logistics?.context?.bpp_id, //STORED OBJECT TODO static for now
+                                    "bpp_uri": logistics?.context?.bpp_uri, //STORED OBJECT TODO static for now
+                                    "transaction_id": logistics?.context?.transaction_id, //TODO static for now
+                                    "message_id": logisticsMessageId,
+                                    "timestamp": contextTimeStamp,
+                                    "ttl": "PT30S"
+                                },
+                                "message": {
+                                    "order": {
+                                        "provider": {
+                                            "id": logistics.message?.catalog["bpp/providers"][0].id
+                                        },
+                                        "items": [deliveryType],
+                                        "fulfillments": [{
+                                            "id": fulfillment.id,
+                                            "type": 'Delivery',
+                                            "start": payload.start,
+                                            "end": payload.end
+                                        }],
+                                        "billing": payload.billing,
+                                        "payment": {
+                                            "type": 'POST-FULFILLMENT',
+                                            "@ondc/org/collection_amount": "0",
+                                            // "collected_by": "BPP"//order.payment['@ondc/org/settlement_details'] //TODO: need details of prepaid transactions to be settle for seller
+                                        }
+                                    }
+                                }
+                            };
+    
+                            console.log('init request---->', initRequest);
+    
+                            try {
+                                let headers = {};
+                                let httpRequest = new HttpRequest(
+                                    config.get("sellerConfig").LOGISTICS_BAP_URI,
+                                    `/init`,
+                                    'POST',
+                                    initRequest,
+                                    headers
+                                );
+                                await httpRequest.send();
+    
+                                const lspOnInitPromise = new Promise(async (resolve, reject) => {
+                                    const interval = setInterval(async () => {
+                                        const lspOnInit = await redisService.get(`${logisticsMessageId}_on_init`);
+    
+                                        if (lspOnInit) {
+                                            clearInterval(interval);
+                                            console.log("on_init----", lspOnInit);
+    
+                                            let initLogistics = JSON.parse(lspOnInit);
+                                            let fulfillment = logistics.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
+                                                return element.type === 'Delivery';
+                                            });
+                                            let deliveryType = logistics.message.catalog["bpp/providers"][0].items.find((element) => {
+                                                return element.category_id === payload.deliveryOption && element.fulfillment_id === fulfillment.id;
+                                            });
+    
+                                            const contextTimestamp = new Date();
+                                            let confirmRequest = {
+                                                "context": {
+                                                    "domain": "nic2004:60232",
+                                                    "action": "confirm",
+                                                    "core_version": "1.2.0",
+                                                    "bap_id": config.get("sellerConfig").BPP_ID,
+                                                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                                                    "bpp_id": initLogistics.context.bpp_id,//STORED OBJECT
+                                                    "bpp_uri": initLogistics.context.bpp_uri, //STORED OBJECT
+                                                    "transaction_id": logistics?.context?.transaction_id,
+                                                    "message_id": logisticsMessageId,
+                                                    "city": initLogistics.context.city,
+                                                    "country": "IND",
+                                                    "timestamp": contextTimestamp,
+                                                    "ttl": "PT30S"
+                                                },
+                                                "message": {
+                                                    "order": {
+                                                        "id": payload.retailOrderId,
+                                                        "state": "Created",
+                                                        "provider": initLogistics.message.order.provider,
+                                                        "items": [
+                                                            deliveryType
+                                                        ],
+                                                        "quote": initLogistics.message.order.quote,
+                                                        "fulfillments": [
+                                                            {
+                                                                "id": fulfillment.id,
+                                                                "type": "Delivery",
+                                                                "start": payload.start,
+                                                                "end": payload.end,
+                                                                "tags": [
+                                                                    {
+                                                                        "code": "state",
+                                                                        "list": [
+                                                                            {
+                                                                                "code": "ready_to_ship",
+                                                                                "value": "no"
+                                                                            }
+                                                                        ]
+                                                                    },
+                                                                    {
+                                                                        "code": "rto_action",
+                                                                        "list": [
+                                                                            {
+                                                                                "code": "return_to_origin",
+                                                                                "value": "no"
+                                                                            }
+                                                                        ]
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ],
+                                                        "billing": payload.billing,
+                                                        "payment": {
+                                                            "type": "POST-FULFILLMENT",
+                                                            "@ondc/org/collection_amount": "0",
+                                                            "collected_by": "BPP"
+                                                        },
+                                                        "@ondc/org/linked_order": {
+                                                            "items": payload.items,
+                                                            "provider": payload.provider,
+                                                            "order": {
+                                                                "id": payload.retailOrderId,
+                                                                "weight": {
+                                                                    "unit": "kilogram",
+                                                                    "value": 5
+                                                                },
+                                                                "dimensions": {
+                                                                    "length": {
+                                                                        "unit": "centimeter",
+                                                                        "value": 15
+                                                                    },
+                                                                    "breadth": {
+                                                                        "unit": "centimeter",
+                                                                        "value": 10
+                                                                    },
+                                                                    "height": {
+                                                                        "unit": "centimeter",
+                                                                        "value": 10
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        "tags": [
+                                                            {
+                                                                "code": "bpp_terms",
+                                                                "list": [
+                                                                    {
+                                                                        "code": "max_liability",
+                                                                        "value": "2"
+                                                                    },
+                                                                    {
+                                                                        "code": "max_liability_cap",
+                                                                        "value": "10000"
+                                                                    },
+                                                                    {
+                                                                        "code": "mandatory_arbitration",
+                                                                        "value": "false"
+                                                                    },
+                                                                    {
+                                                                        "code": "court_jurisdiction",
+                                                                        "value": "Chanigarh"
+                                                                    },
+                                                                    {
+                                                                        "code": "delay_interest",
+                                                                        "value": "1000"
+                                                                    },
+                                                                    {
+                                                                        "code": "static_terms",
+                                                                        "value": "https://github.com/ONDC-Official/protocol-network-extension/discussions/79"
+                                                                    }
+                                                                ]
+                                                            },
+                                                            {
+                                                                "code": "rto_address",
+                                                                "list": [
+                                                                    {
+                                                                        "code": "full_address",
+                                                                        "value": payload.end.location.full
+                                                                    },
+                                                                    {
+                                                                        "code": "short_address",
+                                                                        "value": payload.end.location.short
+                                                                    }
+                                                                ]
+                                                            },
+                                                            {
+                                                                "code": "fulfillment_details",
+                                                                "list": [
+                                                                    {
+                                                                        "code": "bap_id",
+                                                                        "value": config.get("sellerConfig").BPP_ID
+                                                                    },
+                                                                    {
+                                                                        "code": "provider",
+                                                                        "value": logistics.message.catalog["bpp/providers"][0].id
+                                                                    },
+                                                                    {
+                                                                        "code": "quote_id",
+                                                                        "value": initLogistics.message.order.quote.id
+                                                                    },
+                                                                    {
+                                                                        "code": "delivery_location",
+                                                                        "value": payload.end.location.full
+                                                                    }
+                                                                ]
+                                                            },
+                                                            {
+                                                                "code": "delivery_time_slot",
+                                                                "list": [
+                                                                    {
+                                                                        "code": "start_time",
+                                                                        "value": "1100"
+                                                                    },
+                                                                    {
+                                                                        "code": "end_time",
+                                                                        "value": "2200"
+                                                                    }
+                                                                ]
+                                                            },
+                                                            {
+                                                                "code": "fulfillment_tags",
+                                                                "list": [
+                                                                    {
+                                                                        "code": "item_weight",
+                                                                        "value": "5kg"
+                                                                    },
+                                                                    {
+                                                                        "code": "item_dimensions",
+                                                                        "value": "length 15cm, breadth 10cm, height 10cm"
+                                                                    }
+                                                                ]
+                                                            },
+                                                            {
+                                                                "code": "bap_terms",
+                                                                "list": [
+                                                                    {
+                                                                        "code": "accept_bpp_terms",
+                                                                        "value": "Y"
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ],
+                                                        "created_at": contextTimestamp,
+                                                        "updated_at": contextTimestamp
+                                                    }
+                                                }
+                                            };
+    
+                                            console.log(confirmRequest);
+    
+                                            try {
+                                                let headers = {};
+                                                let httpRequest = new HttpRequest(
+                                                    config.get("sellerConfig").LOGISTICS_BAP_URI,
+                                                    `/confirm`,
+                                                    'POST',
+                                                    confirmRequest,
+                                                    headers
+                                                );
+                                                await httpRequest.send();
+    
+                                                const lspOnConfirmPromise = new Promise(async (resolve, reject) => {
+                                                    const interval = setInterval(async () => {
+                                                        const lspOnConfirm = await redisService.get(`${logisticsMessageId}_on_confirm`);
+    
+                                                        if (lspOnConfirm) {
+                                                            clearInterval(interval);
+                                                            await redisService.set(`${payload.retailOrderId}_on_confirm`, lspOnConfirm);
+                                                            console.log("order confirmed---->", lspOnConfirm);
+                                                            resolve(JSON.parse(lspOnConfirm));
+                                                        }
+                                                    }, 1000);
+    
+                                                    setTimeout(() => {
+                                                        clearInterval(interval);
+                                                        reject({ error: 'Timeout waiting for on_confirm response' });
+                                                    }, SEARCH_REQUEST_EXPIRATION);
+                                                });
+    
+                                                const lspOnConfirm = await lspOnConfirmPromise;
+                                                resolve(lspOnConfirm);
+    
+                                            } catch (error) {
+                                                reject({ error: 'Error making confirm request' });
+                                            }
+                                        }
+                                    }, 1000);
+    
+                                    setTimeout(() => {
+                                        clearInterval(interval);
+                                        reject({ error: 'Timeout waiting for on_init response' });
+                                    }, SEARCH_REQUEST_EXPIRATION);
+                                });
+    
+                                await lspOnInitPromise;
+                                resolve(lspOnSearch);
+    
+                            } catch (error) {
+                                reject({ error: 'Error making init request' });
+                            }
+                        }
+                    }, 1000);
+    
+                    setTimeout(() => {
+                        clearInterval(interval);
+                        reject({ error: 'Timeout waiting for on_search response' });
+                    }, SEARCH_REQUEST_EXPIRATION);
+                });
+    
+                const lspOnSearch = await lspOnSearchPromise;
+                return lspOnSearch;
+    
+            } catch (error) {
+                console.log({ error: 'Error making search request' });
+            }
+    
+        } catch (err) {
+            logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+            throw err;
+        }
+    }
+    
+    async  createLspOrder(payload = {}, req = {}) {
+        try {
+            logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
+    
+            const logisticsMessageId = uuidv4();
+            const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
+    
+            let searchRequest = {};
+    
+            const onNetworkLogistics = true;
+    
+            if (onNetworkLogistics) {
+                searchRequest = await this.buildSearchRequest(payload, logisticsMessageId);
+                console.log("search payload completed");
+    
+                await redisService.set(`${logisticsMessageId}_request`, 'ref-logistics-app-stage.ondc.org'); //TODO: take it from config
+                console.log("set redis cache");
+    
+                const lspOnSearch = await this.sendSearchRequest(searchRequest, logisticsMessageId);
+                const lspOnConfirm = await this.processInitRequest(lspOnSearch, logisticsMessageId, payload);
+    
+                return lspOnConfirm;
+            }
+    
+            return { "message": { "ack": { "status": "ACK" } } };
+    
+        } catch (err) {
+            logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+            throw err;
+        }
+    }
+
+    async  buildSearchRequest(payload, logisticsMessageId) {
+        return {
+            "context": {
+                "domain": "nic2004:60232",
+                "country": "IND",
+                "city": 'std:080', //TODO: map it using delivery address
+                "action": "search",
+                "core_version": "1.2.0",
+                "bap_id": config.get("sellerConfig").BPP_ID,
+                "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                "transaction_id": uuidv4(),
+                "message_id": logisticsMessageId,
+                "timestamp": new Date(),
+                "ttl": "PT30S"
+            },
+            "message": {
+                "intent": {
+                    "category": {
+                        "id": payload.deliveryOption
+                    },
+                    "provider": {
+                        "time": { //TODO: fix this from store timing
+                            "days": "1,2,3,4,5,6,7",
+                            "schedule": {
+                                "holidays": []
+                            },
+                            "duration": "PT30M",
+                            "range": {
+                                "start": "1100",
+                                "end": "2200"
+                            }
+                        },
+                    },
+                    "fulfillment": {
+                        "type": "Delivery",
+                        "start": { location: payload.start.location },
+                        "end": { location: payload.end.location }
+                    },
+                    "payment": {
+                        "type": payload.payment_method,
+                        "@ondc/org/collection_amount": payload.orderValue
+                    },
+                    "@ondc/org/payload_details": payload.order_details
+                }
+            }
+        };
+    }
+    async  sendSearchRequest(searchRequest, logisticsMessageId) {
+        try {
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").LOGISTICS_BAP_URI,
+                `/search`,
+                'POST',
+                searchRequest,
+                headers
+            );
+            await httpRequest.send();
+    
+            const lspOnSearch = await this.waitForRedisResponse(`${logisticsMessageId}_response`);
+            console.log("on_search found--->", lspOnSearch);
+            return JSON.parse(lspOnSearch);
+    
+        } catch (error) {
+            console.log({ error: 'Error making search request' });
+            throw error;
+        }
+    }
+        
+async  processInitRequest(lspOnSearch, logisticsMessageId, payload) {
+    const contextTimeStamp = new Date();
+    let fulfillment = lspOnSearch.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
+        return element.type === 'Delivery';
+    });
+    let deliveryType = lspOnSearch.message?.catalog["bpp/providers"][0].items.find((element) => {
+        return element.category_id === payload.deliveryOption && element.fulfillment_id === fulfillment.id;
+    });
+
+    let initRequest = {
+        "context": {
+            "domain": "nic2004:60232",
+            "country": "IND",
+            "city": 'std:080', //TODO: take city from retail context
+            "action": "init",
+            "core_version": "1.2.0",
+            "bap_id": config.get("sellerConfig").BPP_ID,
+            "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+            "bpp_id": lspOnSearch?.context?.bpp_id, //STORED OBJECT TODO static for now
+            "bpp_uri": lspOnSearch?.context?.bpp_uri, //STORED OBJECT TODO static for now
+            "transaction_id": lspOnSearch?.context?.transaction_id, //TODO static for now
+            "message_id": logisticsMessageId,
+            "timestamp": contextTimeStamp,
+            "ttl": "PT30S"
+        },
+        "message": {
+            "order": {
+                "provider": {
+                    "id": lspOnSearch.message?.catalog["bpp/providers"][0].id
+                },
+                "items": [deliveryType],
+                "fulfillments": [{
+                    "id": fulfillment.id,
+                    "type": 'Delivery',
+                    "start": payload.start,
+                    "end": payload.end
+                }],
+                "billing": payload.billing,
+                "payment": {
+                    "type": 'POST-FULFILLMENT',
+                    "@ondc/org/collection_amount": "0",
+                    // "collected_by": "BPP"//order.payment['@ondc/org/settlement_details'] //TODO: need details of prepaid transactions to be settle for seller
+                }
+            }
+        }
+    };
+
+    console.log('init request---->', initRequest);
+
+    await this.sendInitRequest(initRequest, logisticsMessageId);
+
+    const lspOnInit = await this.waitForRedisResponse(`${logisticsMessageId}_on_init`);
+    console.log("on_init----", lspOnInit);
+
+    let initLogistics = JSON.parse(lspOnInit);
+    fulfillment = lspOnSearch.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
+        return element.type === 'Delivery';
+    });
+    deliveryType = lspOnSearch.message.catalog["bpp/providers"][0].items.find((element) => {
+        return element.category_id === payload.deliveryOption && element.fulfillment_id === fulfillment.id;
+    });
+
+    let confirmRequest = {
+        "context": {
+            "domain": "nic2004:60232",
+            "action": "confirm",
+            "core_version": "1.2.0",
+            "bap_id": config.get("sellerConfig").BPP_ID,
+            "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+            "bpp_id": initLogistics.context.bpp_id,//STORED OBJECT
+            "bpp_uri": initLogistics.context.bpp_uri, //STORED OBJECT
+            "transaction_id": lspOnSearch?.context?.transaction_id,
+            "message_id": logisticsMessageId,
+            "city": initLogistics.context.city,
+            "country": "IND",
+            "timestamp": contextTimeStamp,
+            "ttl": "PT30S"
+        },
+        "message": {
+            "order": {
+                "id": payload.retailOrderId,
+                "state": "Created",
+                "provider": initLogistics.message.order.provider,
+                "items": [
+                    deliveryType
+                ],
+                "quote": initLogistics.message.order.quote,
+                "fulfillments": [
+                    {
+                        "id": fulfillment.id,
+                        "type": "Delivery",
+                        "start": payload.start,
+                        "end": payload.end,
+                        "tags": [
+                            {
+                                "code": "state",
+                                "list": [
+                                    {
+                                        "code": "ready_to_ship",
+                                        "value": "no"
+                                    }
+                                ]
+                            },
+                            {
+                                "code": "rto_action",
+                                "list": [
+                                    {
+                                        "code": "return_to_origin",
+                                        "value": "no"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                "billing": payload.billing,
+                "payment": {
+                    "type": "POST-FULFILLMENT",
+                    "@ondc/org/collection_amount": "0",
+                    "collected_by": "BPP"
+                },
+                "@ondc/org/linked_order": {
+                    "items": payload.items,
+                    "provider": payload.provider,
+                    "order": {
+                        "id": payload.retailOrderId,
+                        "weight": {
+                            "unit": "kilogram",
+                            "value": 5
+                        },
+                        "dimensions": {
+                            "length": {
+                                "unit": "centimeter",
+                                "value": 15
+                            },
+                            "breadth": {
+                                "unit": "centimeter",
+                                "value": 10
+                            },
+                            "height": {
+                                "unit": "centimeter",
+                                "value": 10
+                            }
+                        }
+                    }
+                },
+                "tags": [
+                    {
+                        "code": "bpp_terms",
+                        "list": [
+                            {
+                                "code": "max_liability",
+                                "value": "2"
+                            },
+                            {
+                                "code": "max_liability_cap",
+                                "value": "10000"
+                            },
+                            {
+                                "code": "mandatory_arbitration",
+                                "value": "false"
+                            },
+                            {
+                                "code": "court_jurisdiction",
+                                "value": "Chanigarh"
+                            },
+                            {
+                                "code": "delay_interest",
+                                "value": "1000"
+                            },
+                            {
+                                "code": "static_terms",
+                                "value": "https://github.com/ONDC-Official/protocol-network-extension/discussions/79"
+                            }
+                        ]
+                    },
+                    {
+                        "code": "bap_terms",
+                        "list": [
+                            {
+                                "code": "accept_bpp_terms",
+                                "value": "Y"
+                            }
+                        ]
+                    }
+                ],
+                "created_at": contextTimeStamp,
+                "updated_at": contextTimeStamp
+            }
+        }
+
+    };
+
+    console.log(confirmRequest);
+
+    await this.sendConfirmRequest(confirmRequest, logisticsMessageId);
+
+    const lspOnConfirm = await this.waitForRedisResponse(`${logisticsMessageId}_on_confirm`);
+    console.log("order confirmed---->", lspOnConfirm);
+
+    await redisService.set(`${payload.retailOrderId}_on_confirm`, lspOnConfirm);
+    return JSON.parse(lspOnConfirm);
+}
+async waitForRedisResponse(key) {
+    return new Promise((resolve, reject) => {
+        const interval = setInterval(async () => {
+            const response = await redisService.get(key);
+            if (response) {
+                clearInterval(interval);
+                resolve(response);
+            }
+        }, 1000);
+
+        setTimeout(() => {
+            clearInterval(interval);
+            reject({ error: 'Timeout waiting for Redis response' });
+        }, SEARCH_REQUEST_EXPIRATION);
+    });
+}
+        
+
+async lspStatus(payload = {}, req = {}) {
+    try {
+        logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
+
+        const selectMessageId = '';
+        const logisticsMessageId = uuidv4();
+        const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
+
+        let statusRequest = {}
+
+        const onNetworkLogistics = true;
+
+        console.log("logistics-->payload.retailOrderId", payload.retailOrderId);
+        let logisticsOnConfirm = await redisService.get(`${payload.retailOrderId}_on_confirm`);
+
+        let logistics = JSON.parse(logisticsOnConfirm);
+        console.log("logistics-->", (typeof logistics));
+        console.log("logistics-->x", logistics.context);
+        if (onNetworkLogistics) {
+            statusRequest = {
+                "context": {
+                    "domain": "nic2004:60232",
+                    "action": "status",
+                    "core_version": "1.2.0",
+                    "bap_id": config.get("sellerConfig").BPP_ID,
+                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    "bpp_id": logistics.context.bpp_id, // STORED OBJECT
+                    "bpp_uri": logistics.context.bpp_uri, // STORED OBJECT
+                    "transaction_id": logistics.context.transaction_id,
+                    "message_id": logisticsMessageId,
+                    "city": "std:080",
+                    "country": "IND",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message": {
+                    "order_id": payload.retailOrderId,
+                }
+            }
+        }
+
+        console.log("set redis cache");
+
+        // Send the search request to the eCommerce protocol layer
+        try {
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").LOGISTICS_BAP_URI,
+                `/status`,
+                'POST',
+                statusRequest,
+                headers
+            );
+            await httpRequest.send();
+
+            const lspOnSearchPromise = new Promise(async (resolve, reject) => {
+                const interval = setInterval(async () => {
+                    const lspOnStatus = await redisService.get(`${logisticsMessageId}_on_status`);
+
+                    if (lspOnStatus) {
+                        clearInterval(interval);
+                        console.log("on_search found--->", lspOnStatus);
+
+                        // Resolve the promise with the response
+                        resolve(lspOnStatus);
+                    }
+                }, 1000);
+
+                // Set a timeout for the maximum wait time
+                setTimeout(() => {
+                    clearInterval(interval);
+                    console.log({ error: 'Timeout waiting for on_search response' });
+                    reject(new Error('Timeout waiting for on_search response'));
+                }, SEARCH_REQUEST_EXPIRATION);
+            });
+
+            // Await the promise to get the response
+            const lspOnSearchResponse = await lspOnSearchPromise;
+
+            // Do something with the response if needed
+            const contextTimeStamp = new Date();
+            const logisticsResponse = JSON.parse(lspOnSearchResponse);
+
+            // Return the response
+            return { "message": { "ack": { "status": "ACK" }, "response": logisticsResponse.message } };
+        } catch (error) {
+            console.log({ error: 'Error making search request' });
+            throw error;
+        }
+    } catch (err) {
+        logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+        throw err;
+    }
+}
+
+async lspCancel(payload = {}, req = {}) {
+    try {
+        logger.log('info', `[Ondc Service] cancel logistics payload : param :`, payload);
+
+        const selectMessageId = '';
+        const logisticsMessageId = uuidv4();
+        const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
+
+        let statusRequest = {};
+
+        const onNetworkLogistics = true;
+
+        console.log("logistics-->payload.retailOrderId", payload.retailOrderId);
+        let logisticsOnConfirm = await redisService.get(`${payload.retailOrderId}_on_confirm`);
+
+        let logistics = JSON.parse(logisticsOnConfirm);
+        console.log("logistics-->", (typeof logistics));
+        console.log("logistics-->x", logistics.context);
+        if (onNetworkLogistics) {
+            statusRequest = {
+                "context": {
+                    "domain": "nic2004:60232",
+                    "action": "cancel",
+                    "core_version": "1.2.0",
+                    "bap_id": config.get("sellerConfig").BPP_ID,
+                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    "bpp_id": logistics.context.bpp_id, // STORED OBJECT
+                    "bpp_uri": logistics.context.bpp_uri, // STORED OBJECT
+                    "transaction_id": logistics.context.transaction_id,
+                    "message_id": logisticsMessageId,
+                    "city": "std:080",
+                    "country": "IND",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message": {
+                    "order_id": payload.retailOrderId,
+                    "cancellation_reason_id": payload.cancellationReasonId
+                }
+            };
+        }
+
+        console.log("set redis cache");
+
+        // Send the cancel request to the eCommerce protocol layer
+        try {
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").LOGISTICS_BAP_URI,
+                `/cancel`,
+                'POST',
+                statusRequest,
+                headers
+            );
+            await httpRequest.send();
+
+            const lspOnCancelPromise = new Promise(async (resolve, reject) => {
+                const interval = setInterval(async () => {
+                    const lspOnStatus = await redisService.get(`${logisticsMessageId}_on_cancel`);
+
+                    if (lspOnStatus) {
+                        clearInterval(interval);
+                        console.log("on_status found--->", lspOnStatus);
+
+                        // Resolve the promise with the response
+                        resolve(lspOnStatus);
+                    }
+                }, 1000);
+
+                // Set a timeout for the maximum wait time
+                setTimeout(() => {
+                    clearInterval(interval);
+                    console.log({ error: 'Timeout waiting for on_status response' });
+                    reject(new Error('Timeout waiting for on_status response'));
+                }, SEARCH_REQUEST_EXPIRATION);
+            });
+
+            // Await the promise to get the response
+            const lspOnCancelResponse = await lspOnCancelPromise;
+
+            // Do something with the response if needed
+            const contextTimeStamp = new Date();
+            const logisticsResponse = JSON.parse(lspOnCancelResponse);
+
+            // Return the response
+            return { "message": { "ack": { "status": "ACK" }, "response": logisticsResponse.message } };
+        } catch (error) {
+            console.log({ error: 'Error making cancel request' });
+            throw error;
+        }
+    } catch (err) {
+        logger.error('error', `[Ondc Service] cancel logistics payload - cancel logistics payload : param :`, err);
+        throw err;
+    }
+}
+
+
+
+    async orderSelectWithoutlogistic(payload = {}, req = {}) {
+        try {
+            const items = payload.message.order.items
+            console.log({ items })
+            logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4();
+            const searchRequest = await productService.selectV2(payload);
+            //process select request and send it to protocol layer
+            this.postSelectRequestV2(searchRequest, logisticsMessageId, selectMessageId)
+
+            return searchRequest
+        } catch (err) {
+            logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+            throw err;
+        }
+    }
+
+    async postSelectRequestV2(searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            try {
+                let headers = {};
+                let httpRequest = new HttpRequest(
+                    config.get("sellerConfig").RETAIL_BPP_URI,
+                    `/on_select`,
+                    'POST',
+                    searchRequest,
+                    headers
+                );
+                console.error("Here  -- 3")
+
+
+                await httpRequest.send();
+
+                console.error("Here  -- 4")
+
+
+            } catch (e) {
+                logger.error('error', `[Ondc Service] post http select response : `, e);
+                return e
+            }
+            console.error("Here  -- 5")
+
+            //2. wait async to fetch logistics responses
+
+            //async post request
+            // setTimeout(() => {
+            //     logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`,searchRequest);
+            //     this.buildSelectRequest(logisticsMessageId, selectMessageId)
+            // }, 10000); //TODO move to config
+            // console.error("Here  -- 6")
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async postSelectRequest(searchRequest, logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/search`,
+                        'POST',
+                        searchRequest,
+                        headers
+                    );
+
+
+                    await httpRequest.send();
+
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                    this.buildSelectRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+                }, 6000); //TODO move to config
+            } else {
+                this.buildSelectRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async buildSelectRequest(logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            logger.log('info', `[Ondc Service] search logistics payload - build select request : param :`, {
+                logisticsMessageId,
+                selectMessageId
+            });
+            //1. look up for logistics
+            let logistics_on_search = await this.getLogisticsDumps(logisticsMessageId, 'on_search')
+
+            if (logistics_on_search.data.length > 0) {
+                logistics_on_search = logistics_on_search.data.map((data) => { return data.request });
+            }
+            let retail_select = await this.getRetailDumps(selectMessageId, 'select')
+            if (retail_select.data.length > 0) {
+                retail_select = [retail_select.data[0].request]
+            }
+
+            //2. if data present then build select response
+            let selectResponse = await productService.productSelect({ logistics_on_search, retail_select }, onNetworkLogistics)
+            //3. post to protocol layer
+            await this.postSelectResponse(selectResponse);
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] search logistics payload - build select request : param :`, e);
+            return e
+        }
+    }
+
+    async postSearchRequest(searchRequest, selectMessageId) {
+        try {
+            this.buildSearchRequest(searchRequest, selectMessageId)
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e;
+        }
+    }
+
+    async buildSearchRequest(searchRequest, searchMessageId) {
+
+        try {
+            // let org = await productService.getOrgForOndc(payload.message.order.provider.id);
+            let searchResponse = await productService.search(searchRequest, searchMessageId)
+            console.log("===earchResponse.productData.length", searchResponse.productData.length)
+            if (searchResponse.productData.length > 0) {
+                for (let onsearch of searchResponse.productData) {
+                    await this.postSearchResponse(onsearch, searchResponse.type);
+                }
+            }
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] search logistics payload - build select request : param :`, e);
+            return e
+        }
+    }
+
+    //get all logistics response from protocol layer
+    async getLogisticsDumps(logisticsMessageId, type) {
+        try {
+
+            logger.log('info', `[Ondc Service] get logistics : param :`, { logisticsMessageId, type });
+
+            let headers = {};
+            let query = `messageId=${logisticsMessageId}&action=${type}&statusCode=200`
+
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").LOGISTICS_BAP_URI,
+                `/request-dump?${query}`,
+                'get',
+                {},
+                headers
+            );
+
+            // console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            logger.log('info', `[Ondc Service] get logistics : response :`, result.data);
+
+            return result.data
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] get logistics : response :`, e);
+            return e
+        }
+
+    }
+
+
+    //get all logistics response from protocol layer
+    async getRetailDumps(retailMessageId, type) {
+        try {
+
+            logger.log('info', `[Ondc Service] get retail : param :`, { retailMessageId, type });
+
+            let headers = {};
+            let query = `messageId=${retailMessageId}&action=${type}&statusCode=200`
+
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/request-dump?${query}`,
+                'get',
+                {},
+                headers
+            );
+
+            // console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            logger.log('info', `[Ondc Service] get logistics : response :`, result.data);
+
+            return result.data
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] get logistics : response :`, e);
+            return e
+        }
+
+    }
+
+
+    //return select response to protocol layer
+    async postSelectResponse(selectResponse) {
+        try {
+
+            logger.info('info', `[Ondc Service] post http select response : `, selectResponse);
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_select`,
+                'POST',
+                selectResponse,
+                headers
+            );
+
+            let result = await httpRequest.send();
+            return result.data
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+
+    }
+
+    //return select response to protocol layer
+    async postSearchResponse(searchResponse, type) {
+        try {
+
+            logger.info('info', `[Ondc Service] post http select response : `, searchResponse);
+            let headers = {};
+            if (type === 'incr') {
+                headers = { "X-ONDC-Search-Response": 'inc' }
+            } else {
+                headers = { "X-ONDC-Search-Response": 'full' }
+            }
+
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").BPP_URI,
+                `/protocol/v1/on_search`,
+                'POST',
+                searchResponse,
+                headers
+            );
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http search response : `, e);
+            return e
+        }
+
+    }
+
+    async orderInit(payload = {}, req = {}) {
+        try {
+            // const {criteria = {}, payment = {}} = req || {};
+            logger.log('info', `[Ondc Service] init logistics payload : param :`, payload.message.order);
+
+            const selectRequest = await SelectRequest.findOne({
+                where: {
+                    transactionId: payload.context.transaction_id
+                },
+                order: [
+                    ['createdAt', 'DESC']
+                ]
+            })
+
+            //          logger.log('info', `[Ondc Service] old select request :`,selectRequest);
+
+            let org = await productService.getOrgForOndc(payload.message.order.provider.id);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+            const logistics = selectRequest?.selectedLogistics ?? ''; //TODO empty for now
+            console.log("selectRequest---->", selectRequest);
+            console.log("selectRequest---->", logistics?.message?.catalog);
+            let storeLocationEnd = {}
+            if (org.providerDetail.storeDetails) {
+                storeLocationEnd = {
+                    location: {
+                        gps: `${org.providerDetail.storeDetails.location.lat},${org.providerDetail.storeDetails.location.long}`,
+                        address: {
+                            area_code: org.providerDetail.storeDetails.address.area_code,
+                            name: org.providerDetail.name,
+                            building: org.providerDetail.storeDetails.address.building,
+                            locality: org.providerDetail.storeDetails.address.locality,
+                            city: org.providerDetail.storeDetails.address.city,
+                            state: org.providerDetail.storeDetails.address.state,
+                            country: org.providerDetail.storeDetails.address.country
+                        }
+                    },
+                    contact:
+                    {
+                        phone: org.providerDetail.storeDetails.supportDetails.mobile,
+                        email: org.providerDetail.storeDetails.supportDetails.email
+                    }
+                }
+            }
+
+            logger.log('info', `[Ondc Service] old selected logistics :`, logistics);
+
+            const order = payload.message.order;
+            const initMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+            const contextTimeStamp = new Date()
+            let initRequest = {}
+            if (onNetworkLogistics) {
+                let deliveryType = logistics.message.catalog["bpp/providers"][0].items.find((element) => {
+                    return element.category_id === config.get("sellerConfig").LOGISTICS_DELIVERY_TYPE
+                });// TODO commented for now for logistic
+
+
+                let fulfillment = logistics.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
+                    return element.type === 'Delivery'
+                });
+                deliveryType = logistics.message?.catalog["bpp/providers"][0].items.find((element) => {
+                    return element.category_id === org.providerDetail.storeDetails.logisticsDeliveryType && element.fulfillment_id === fulfillment.id
+                });
+                // deliveryType = logisticProvider.message.catalog["bpp/providers"][0].fulfillments.find((element)=>{return element.type === org.providerDetail.storeDetails.logisticsDeliveryType});
+
+                // item.fulfillment_id = fulfillment.id //TODO: revisit for item level status
+
+
+                //let deliveryType = payload.message.order.items
+
+                initRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "country": "IND",
+                        "city": payload.context.city, //TODO: take city from retail context
+                        "action": "init",
+                        "core_version": "1.2.0",
+                        "bap_id": BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "bpp_id": logistics?.context?.bpp_id, //STORED OBJECT TODO static for now
+                        "bpp_uri": logistics?.context?.bpp_uri, //STORED OBJECT TODO static for now
+                        "transaction_id": logistics?.context?.transaction_id, //TODO static for now
+                        "message_id": logisticsMessageId,
+                        "timestamp": contextTimeStamp,
+                        "ttl": "PT30S"
+                    },
+                    "message": {
+                        "order": {
+                            "provider": {
+                                "id": logistics.message?.catalog["bpp/providers"][0].id
+                            },
+                            "items": [deliveryType],
+                            "fulfillments": [{
+                                "id": fulfillment.id,
+                                "type": 'Delivery',
+                                "start": storeLocationEnd,
+                                "end": order.fulfillments[0].end
+                            }],
+                            "billing": { //TODO: discuss whos details should go here buyer or seller
+                                "name": order.billing.name,
+                                "address": {
+                                    "name": order.billing.address.name,
+                                    "building": order.billing.address.building,
+                                    "locality": order.billing.address.locality,
+                                    "city": order.billing.address.city,
+                                    "state": order.billing.address.state,
+                                    "country": order.billing.address.country,
+                                    "area_code": order.billing.address.area_code
+                                },
+                                "tax_number": org.providerDetail.GSTN.GSTN ?? "27ACTPC1936E2ZN", //FIXME: take GSTN no
+                                "phone": org.providerDetail.storeDetails.supportDetails.mobile, //FIXME: take provider details
+                                "email": org.providerDetail.storeDetails.supportDetails.email, //FIXME: take provider details
+                                "created_at": contextTimeStamp,
+                                "updated_at": contextTimeStamp
+                            },
+                            "payment": {
+                                "type": 'POST-FULFILLMENT',
+                                "@ondc/org/collection_amount": "0",
+                                // "collected_by": "BPP"//order.payment['@ondc/org/settlement_details'] //TODO: need details of prepaid transactions to be settle for seller
+                            }
+                        }
+
+                    }
+                }
+            }
+
+            this.postInitRequest(initRequest, logisticsMessageId, initMessageId, onNetworkLogistics)
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            logger.error('error', `[Ondc Service] build init request :`, { error: err.stack, message: err.message });
+            console.log(err)
+            return err
+        }
+    }
+
+    async orderInitWithoutlogistic(payload = {}, req = {}) {
+        try {
+            const initMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+
+            //logger.log('info', `[Ondc Service] build init request :`, {logisticsMessageId,initMessageId: initMessageId});
+            const initRequest = await productService.initV2(payload);
+            this.postInitRequest(initRequest, logisticsMessageId, initMessageId)
+
+            return { 'status': 'ACK' }
+        } catch (err) {
+            logger.error('error', `[Ondc Service] build init request :`, { error: err.stack, message: err.message });
+            console.log(err)
+            return err
+        }
+    }
+
+
+    async postInitRequest(searchRequest, logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/init`,
+                        'POST',
+                        searchRequest,
+                        headers
+                    );
+
+
+                    await httpRequest.send();
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                    this.buildInitRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+                }, 3000); //TODO move to config
+            } else {
+                this.buildInitRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async buildInitRequest(logisticsMessageId, initMessageId, onNetworkLogistics) {
+
+        try {
+            logger.log('info', `[Ondc Service] build init request :`, { logisticsMessageId, initMessageId });
+
+            //1. look up for logistics
+            // let logisticsResponse = await this.getLogistics(logisticsMessageId, initMessageId, 'init')
+
+            //1. look up for logistics
+            let logistics_on_init = await this.getLogisticsDumps(logisticsMessageId, 'on_init')
+
+            if (logistics_on_init.data.length > 0) {
+                logistics_on_init = logistics_on_init.data.map((data) => { return data.request });
+            }
+            let retail_init = await this.getRetailDumps(initMessageId, 'init')
+            if (retail_init.data.length > 0) {
+                retail_init = [retail_init.data[0].request]
+            }
+
+            //2. if data present then build select response
+            logger.log('info', `[Ondc Service] build init request - get logistics response :`,);
+            let selectResponse = await productService.productInit({ logistics_on_init, retail_init }, onNetworkLogistics)
+
+            //3. post to protocol layer
+            await this.postInitResponse(selectResponse);
+
+        } catch (err) {
+            logger.error('error', `[Ondc Service] build init request :`, { error: err.stack, message: err.message });
+            return err
+        }
+    }
+
+
+    //return init response to protocol layer
+    async postInitResponse(initResponse) {
+        try {
+
+            logger.info('info', `[Ondc Service] post init request :`, initResponse);
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_init`,
+                'POST',
+                initResponse,
+                headers
+            );
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (err) {
+            logger.error('error', `[Ondc Service] post init request :`, { error: err.stack, message: err.message });
+            return err
+        }
+
+    }
+
+    async orderConfirm(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const selectRequest = await SelectRequest.findOne({
+                where: {
+                    transactionId: payload.context.transaction_id
+                },
+                order: [
+                    ['createdAt', 'DESC'],
+                ]
+            })
+
+            const initRequest = await InitRequest.findOne({
+                where: {
+                    transactionId: payload.context.transaction_id
+                },
+                order: [
+                    ['createdAt', 'DESC'],
+                ]
+            })
+
+            const logistics = selectRequest?.selectedLogistics;
+            const order = payload.message.order;
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+
+            let org = await productService.getOrgForOndc(payload.message.order.provider.id);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+
+            console.log("org details ---", org)
+            let storeLocationEnd = {}
+            if (org.providerDetail.storeDetails) {
+                storeLocationEnd = {
+                    location: {
+                        gps: `${org.providerDetail.storeDetails.location.lat},${org.providerDetail.storeDetails.location.long}`,
+                        address: {
+                            area_code: org.providerDetail.storeDetails.address.area_code,
+                            name: org.providerDetail.name,
+                            building: org.providerDetail.storeDetails.address.building,
+                            locality: org.providerDetail.storeDetails.address.locality,
+                            city: org.providerDetail.storeDetails.address.city,
+                            state: org.providerDetail.storeDetails.address.state,
+                            country: org.providerDetail.storeDetails.address.country
+                        }
+                    },
+                    contact:
+                    {
+                        phone: org.providerDetail.storeDetails.supportDetails.mobile,
+                        email: org.providerDetail.storeDetails.supportDetails.email
+                    },
+                    person: {
+                        name: org.providerDetail.name //TODO: missing from curent impl
+                    }
+                }
+            }
+
+
+            // const logisticsOrderId = uuidv4();
+
+            let end = { ...order.fulfillments[0].end }
+
+            end.location.address.locality = end.location.address.locality ?? end.location.address.street
+            end.person = { name: end.location.address.name }
+
+            //const isInvalidItem =false
+            // let itemDetails = []
+            // for (const items of payload.message.order.items) {
+            //     let item = await productService.getForOndc(items.id)
+            //
+            //     let details = {
+            //         "descriptor": {
+            //             "name": item.productName
+            //         },
+            //         "price": {
+            //             "currency": "INR",
+            //             "value": "" + item.MRP
+            //         },
+            //         "category_id": item.productCategory,
+            //         "quantity": {
+            //             "count": items.quantity.count,
+            //             "measure": { //TODO: hard coded
+            //                 "unit": "Kilogram",
+            //                 "value": 1
+            //             }
+            //         }
+            //     }
+            //     itemDetails.push(details)
+            // }
+
+            let category = domainNameSpace.find((cat) => {
+                return cat.domain === payload.context.domain
+            })
+            let itemDetails = []
+            for (const items of payload.message.order.items) {
+                let item = await productService.getForOndc(items.id)
+
+                let details = {
+                    "descriptor": {
+                        "name": item.commonDetails.productName
+                    },
+                    "price": {
+                        "currency": "INR",
+                        "value": "" + item.commonDetails.MRP
+                    },
+                    "category_id": category.name,
+                    "quantity": {
+                        "count": 1,
+                        "measure": {
+                            "unit": "kilogram",
+                            "value": 5
+                        }
+                    },
+                }
+                // "provider": { //TODO: need clarification
+                //
+                //     "quantity": {
+                //     "count": items.quantity.count,
+                //     "measure": { //TODO: hard coded
+                //         "unit": "Kilogram",
+                //         "value": 1
+                //     }
+                // }
+                itemDetails.push(details)
+            }
+            let confirmRequest = {}
+            if (onNetworkLogistics) {
+                let fulfillment = selectRequest.selectedLogistics.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
+                    return element.type === 'Delivery'
+                });
+                let deliveryType = selectRequest.selectedLogistics.message.catalog["bpp/providers"][0].items.find((element) => {
+                    return element.category_id === org.providerDetail.storeDetails.logisticsDeliveryType && element.fulfillment_id === fulfillment.id
+                });
+
+
+                // let deliveryType = selectRequest.selectedLogistics.message.catalog['bpp/providers'][0].items.find((element)=>{return element.category_id === config.get("sellerConfig").LOGISTICS_DELIVERY_TYPE});// let deliveryType = logistics.message.catalog["bpp/providers"][0].items.find((element)=>{return element.category_id === config.get("sellerConfig").LOGISTICS_DELIVERY_TYPE}); TODO commented for now for logistic
+                // let deliveryType = payload.message.order.items //TODO commented above for now
+                const contextTimestamp = new Date()
+                confirmRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "action": "confirm",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                        "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                        "transaction_id": initRequest.logisticsTransactionId,
+                        "message_id": logisticsMessageId,
+                        "city": logistics.context.city,
+                        "country": "IND",
+                        "timestamp": contextTimestamp,
+                        "ttl": "PT30S"
+                    },
+                    "message": {
+                        "order": {
+                            "id": payload.message.order.id,
+                            "state": "Created",
+                            "provider": initRequest.selectedLogistics.message.order.provider,
+                            "items": [
+                                deliveryType
+                            ],
+                            "quote": initRequest.selectedLogistics.message.order.quote,
+                            "fulfillments": [
+                                {
+                                    "id": order.fulfillments[0].id,
+                                    "type": "Delivery",
+                                    "start": storeLocationEnd,
+                                    "end": end,
+                                    "tags": [
+                                        {
+                                            "code": "state",
+                                            "list": [
+                                                {
+                                                    "code": "ready_to_ship",
+                                                    "value": "yes"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "code": "rto_action",
+                                            "list": [
+                                                {
+                                                    "code": "return_to_origin",
+                                                    "value": "yes"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ],
+                            "billing": {
+                                ...payload.message.order.billing,
+                                "tax_number": org.providerDetail.GSTN.GSTN ?? "27ACTPC1936E2ZN", //FIXME: take GSTN no
+                                "phone": org.providerDetail.storeDetails.supportDetails.mobile, //FIXME: take provider details
+                                "email": org.providerDetail.storeDetails.supportDetails.email, //FIXME: take provider details
+                                "created_at": contextTimestamp,
+                                "updated_at": contextTimestamp
+                            },
+                            "payment": {
+                                "type": "POST-FULFILLMENT",
+                                "@ondc/org/collection_amount": "0",
+                                "collected_by": "BPP"
+                            },
+                            "@ondc/org/linked_order": {
+                                "items": itemDetails,
+                                "provider": {
+                                    "descriptor": {
+                                        "name": org.providerDetail.name
+                                    },
+                                    address: {
+                                        area_code: org.providerDetail.storeDetails.address.area_code,
+                                        name: org.providerDetail.name,
+                                        building: org.providerDetail.storeDetails.address.building,
+                                        locality: org.providerDetail.storeDetails.address.locality,
+                                        city: org.providerDetail.storeDetails.address.city,
+                                        state: org.providerDetail.storeDetails.address.state,
+                                        country: org.providerDetail.storeDetails.address.country
+                                    }
+                                },
+                                "order": {
+                                    "id": order.id,
+                                    "weight": {
+                                        "unit": "kilogram",
+                                        "value": 5
+                                    },
+                                    "dimensions": {
+                                        "length": {
+                                            "unit": "centimeter",
+                                            "value": 15
+                                        },
+                                        "breadth": {
+                                            "unit": "centimeter",
+                                            "value": 10
+                                        },
+                                        "height": {
+                                            "unit": "centimeter",
+                                            "value": 10
+                                        }
+                                    }
+                                }
+                            },
+                            "tags": [
+                                {
+                                    "code": "bpp_terms",
+                                    "list": [
+                                        {
+                                            "code": "max_liability",
+                                            "value": "2"
+                                        },
+                                        {
+                                            "code": "max_liability_cap",
+                                            "value": "10000"
+                                        },
+                                        {
+                                            "code": "mandatory_arbitration",
+                                            "value": "false"
+                                        },
+                                        {
+                                            "code": "court_jurisdiction",
+                                            "value": "Chanigarh"
+                                        },
+                                        {
+                                            "code": "delay_interest",
+                                            "value": "1000"
+                                        },
+                                        {
+                                            "code": "static_terms",
+                                            "value": "https://github.com/ONDC-Official/protocol-network-extension/discussions/79"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "code": "bap_terms",
+                                    "list": [
+                                        {
+                                            "code": "accept_bpp_terms",
+                                            "value": "Y"
+                                        }
+                                    ]
+                                }
+                            ],
+                            "created_at": contextTimestamp,
+                            "updated_at": contextTimestamp
+                        }
+                    }
+
+                }
+            }
+            logger.info('info', `[Ondc Service] post init request :confirmRequestconfirmRequestconfirmRequestconfirmRequestconfirmRequestconfirmRequest`, confirmRequest);
+            this.postConfirmRequest(confirmRequest, logisticsMessageId, selectMessageId, onNetworkLogistics)
+            //}, 10000); //TODO move to config
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async orderConfirmWithOutLogistic(payload = {}, req = {}) {
+        try {
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+            const searchRequest = await productService.confirmV2(payload);
+            this.postConfirmRequestV2(searchRequest, logisticsMessageId, selectMessageId)
+            //}, 10000); //TODO move to config
+
+            return { status: "ACK" }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async postConfirmRequestV2(searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            try {
+
+                let headers = {};
+                let httpRequest = new HttpRequest(
+                    config.get("sellerConfig").BPP_URI,
+                    `/protocol/v1/on_confirm`,
+                    'POST',
+                    searchRequest,
+                    headers
+                );
+
+                await httpRequest.send();
+
+            } catch (e) {
+                logger.error('error', `[Ondc Service] post http select response : `, e);
+                return e
+            }
+
+            //2. wait async to fetch logistics responses
+
+            // //async post request
+            // setTimeout(() => {
+            //     logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+            //     this.buildConfirmRequest(logisticsMessageId, selectMessageId)
+            // }, 10000); //TODO move to config
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async postConfirmRequest(searchRequest, logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/confirm`,
+                        'POST',
+                        searchRequest,
+                        headers
+                    );
+
+                    await httpRequest.send();
+
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                    this.buildConfirmRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+                }, 4000); //TODO move to config
+            } else {
+                this.buildConfirmRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+
+    async buildConfirmRequest(logisticsMessageId, retailMessageId, onNetworkLogistics) {
+
+        try {
+            //1. look up for logistics
+            let logistics_on_confirm = await this.getLogisticsDumps(logisticsMessageId, 'on_confirm')
+
+            if (logistics_on_confirm.data.length > 0) {
+                logistics_on_confirm = logistics_on_confirm.data.map((data) => { return data.request });
+            }
+            let retail_confirm = await this.getRetailDumps(retailMessageId, 'confirm')
+            if (retail_confirm.data.length > 0) {
+                retail_confirm = [retail_confirm.data[0].request]
+            }
+
+            let selectResponse = await productService.productConfirm({ logistics_on_confirm, retail_confirm }, onNetworkLogistics)
+
+            //3. post to protocol layer
+            await this.postConfirmResponse(selectResponse);
+
+            // //4. trigger on_status call to BAP
+            // const confirmRequest = logisticsResponse.retail_confirm[0]//select first select request
+            // const context = { ...selectResponse.context, action: 'on_status', timestamp: new Date(), message_id: uuidv4() }
+            // const orderId = confirmRequest.message.order.order_id
+            //
+            // console.log("context--->", context)
+            // await this.triggerOnStatus(context, orderId);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+    async triggerOnStatus(context, orderId) {
+
+        console.log("context", context)
+        console.log("orderId", orderId)
+        let status = {
+            "context": context,
+            "message": {
+                "order_id": orderId
+            }
+        }
+
+        await this.orderStatus(status, {}, true)
+    }
+
+
+    //return confirm response to protocol layer
+    async postConfirmResponse(confirmResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_confirm`,
+                'POST',
+                confirmResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+    async orderTrack(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    transactionId: payload.context.transaction_id,
+                    retailOrderId: payload.message.order_id
+                }
+            })
+
+            const logistics = confirmRequest.selectedLogistics;
+
+            //const order = payload.message.order;
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+            let org = await productService.getOrgForOndc(confirmRequest.providerId);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+            let trackRequest = {}
+            if (onNetworkLogistics) {
+                trackRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "action": "track",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                        "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                        "transaction_id": confirmRequest.logisticsTransactionId,
+                        "message_id": logisticsMessageId,
+                        "city": "std:080",
+                        "country": "IND",
+                        "timestamp": new Date(),
+                        "ttl": "PT30S"
+                    },
+                    "message":
+                    {
+                        "order_id": confirmRequest.orderId,//payload.message.order_id,
+                    }
+
+                }
+            }
+
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postTrackRequest(trackRequest, logisticsMessageId, selectMessageId, onNetworkLogistics)
+            // }, 5000); //TODO move to config
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+
+    async postTrackRequest(searchRequest, logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/track`,
+                        'POST',
+                        searchRequest,
+                        headers
+                    );
+
+
+                    await httpRequest.send();
+
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                    this.buildTrackRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+                }, 4000); //TODO move to config
+            } else {
+                this.buildTrackRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async buildTrackRequest(logisticsMessageId, retailMessageId, onNetworkLogistics) {
+
+        try {
+            //1. look up for logistics
+            let logistics_on_track = await this.getLogisticsDumps(logisticsMessageId, 'on_track')
+
+            if (logistics_on_track.data.length > 0) {
+                logistics_on_track = logistics_on_track.data.map((data) => { return data.request });
+            }
+            let retail_track = await this.getRetailDumps(retailMessageId, 'track')
+            if (retail_track.data.length > 0) {
+                retail_track = [retail_track.data[0].request]
+            }
+
+            let selectResponse = await productService.productTrack({ retail_track, logistics_on_track }, onNetworkLogistics)
+
+            //3. post to protocol layer
+            await this.postTrackResponse(selectResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+
+    //return track response to protocol layer
+    async postTrackResponse(trackResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_track`,
+                'POST',
+                trackResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+    async orderStatus(payload = {}, req = {}, unsoliciated = false) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    transactionId: payload.context.transaction_id,
+                    retailOrderId: payload.message.order_id
+                }
+            })
+
+            const logistics = confirmRequest?.selectedLogistics;
+            let org = await productService.getOrgForOndc(confirmRequest.providerId);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+
+            //const order = payload.message.order;
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+            let statusRequest = {}
+            if (onNetworkLogistics) {
+                statusRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "action": "status",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                        "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                        "transaction_id": confirmRequest.logisticsTransactionId,
+                        "message_id": logisticsMessageId,
+                        "city": "std:080",
+                        "country": "IND",
+                        "timestamp": new Date(),
+                        "ttl": "PT30S"
+                    },
+                    "message":
+                    {
+                        "order_id": confirmRequest.orderId,
+                    }
+
+                }
+
+            }
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postStatusRequest(statusRequest, logisticsMessageId, selectMessageId, unsoliciated, payload, onNetworkLogistics)
+            //}, 5000); //TODO move to config
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async orderStatusWithoutLogistics(payload = {}, req = {}, unsoliciated = false) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+
+            //const order = payload.message.order;
+            const selectMessageId = payload.context.message_id;
+
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            let statusResponse = await productService.productStatusWithoutLogistics(payload)
+
+            //3. post to protocol layer
+            this.postStatusResponse(statusResponse);
+
+
+            return { status: 'ACK' }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async orderStatusUpdate(payload = {}, req = {}) {
+        try {
+            // const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    retailOrderId: payload.data.orderId
+                }
+            })
+
+            const logistics = confirmRequest.selectedLogistics;
+
+            const order = payload.data;
+            const selectMessageId = uuidv4();
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+
+            const trackRequest = {
+                "context": {
+                    "domain": "nic2004:60232",
+                    "action": "update",
+                    "core_version": "1.2.0",
+                    "bap_id": config.get("sellerConfig").BPP_ID,
+                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                    "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                    "transaction_id": confirmRequest.logisticsTransactionId,
+                    "message_id": logisticsMessageId,
+                    "city": "std:080", //TODO: take it from request
+                    "country": "IND",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message": {
+                    "order": {
+                        "id": order.orderId,
+                        "state": "Accepted",
+                        "items": logistics.items,
+                        "@ondc/org/linked_order": {
+                            "items": [{
+                                "descriptor": {
+                                    "name": "KIT KAT"
+                                },
+                                "quantity": {
+                                    "count": 2,
+                                    "measure": {
+                                        "value": 200,
+                                        "unit": "Gram"
+                                    }
+                                },
+                                "price": {
+                                    "currency": "INR",
+                                    "value": "200.00"
+                                },
+                                "category_id": "Grocery"
+                            }]
+                        },
+                        "fulfillments": [{
+                            "id": logistics.message.order.fulfillments[0].id,
+                            "type": logistics.message.order.fulfillments[0].type,
+                            "tracking": logistics.message.order.fulfillments[0].tracking,
+                            "tags": [
+                                {
+                                    "code": "state",
+                                    "list": [
+                                        {
+                                            "code": "ready_to_ship",
+                                            "value": "yes"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "code": "rto_action",
+                                    "list": [
+                                        {
+                                            "code": "return_to_origin",
+                                            "value": "yes"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }],
+                        "updated_at": new Date()
+                    },
+                    "update_target": "fulfillment"
+                }
+
+            }
+
+
+            payload = { message: { order: order }, context: confirmRequest.confirmRequest.context }
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postUpdateOrderStatusRequest(payload, trackRequest, logisticsMessageId, selectMessageId)
+            //}, 5000); //TODO move to config
+
+            return { status: 'ACK' }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async orderCancelFromSeller(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    retailOrderId: payload.data.orderId
+                }
+            })
+            let org = await productService.getOrgForOndc(confirmRequest.providerId);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+            const logistics = confirmRequest.selectedLogistics;
+
+            const order = payload.data;
+
+            order.context = confirmRequest.confirmRequest.context
+
+            const selectMessageId = uuidv4();
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+            let trackRequest = {}
+            if (onNetworkLogistics) {
+                trackRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "action": "cancel",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                        "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                        "transaction_id": confirmRequest.logisticsTransactionId,
+                        "message_id": logisticsMessageId,
+                        "city": "std:080", //TODO: take it from request
+                        "country": "IND",
+                        "timestamp": new Date(),
+                        "ttl": "PT30S"
+                    },
+                    "message": {
+                        "order_id": order.orderId,
+                        "cancellation_reason_id": order.cancellation_reason_id
+                    }
+                }
+            }
+            payload = { message: { order: order }, context: confirmRequest.confirmRequest.context }
+
+            console.log("payload-------------->", payload);
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postSellerCancelRequest(payload, trackRequest, logisticsMessageId, selectMessageId, onNetworkLogistics)
+            //}, 5000); //TODO move to config
+
+            return { status: 'ACK' }
+        } catch (err) {
+
+            console.log("err--->", err);
+            throw err;
+        }
+    }
+
+    async orderUpdate(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    retailOrderId: payload.message.order.id
+                }
+            })
+
+            const logistics = confirmRequest.selectedLogistics;
+
+            const order = payload.message.order
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+
+            const trackRequest = {
+                "context": {
+                    "domain": "nic2004:60232",
+                    "action": "update",
+                    "core_version": "1.1.0",
+                    "bap_id": config.get("sellerConfig").BPP_ID,
+                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                    "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                    "transaction_id": confirmRequest.logisticsTransactionId,
+                    "message_id": logisticsMessageId,
+                    "city": "std:080", //TODO: take it from request
+                    "country": "IND",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message": {
+                    "order": {
+                        "id": order.orderId,
+                        "state": "Accepted",
+                        "items": logistics.items,
+                        "@ondc/org/linked_order": {
+                            "items": [{ //TODO: get valid item from list and update the fields
+                                "descriptor": {
+                                    "name": "KIT KAT"
+                                },
+                                "quantity": {
+                                    "count": 2,
+                                    "measure": {
+                                        "value": 200,
+                                        "unit": "Gram"
+                                    }
+                                },
+                                "price": {
+                                    "currency": "INR",
+                                    "value": "200.00"
+                                },
+                                "category_id": "Grocery"
+                            }]
+                        },
+                        "fulfillments": [{
+                            "id": logistics.message.order.fulfillments[0].id,
+                            "type": logistics.message.order.fulfillments[0].type,
+                            "tracking": logistics.message.order.fulfillments[0].tracking,
+                            "tags": {
+                                "@ondc/org/order_ready_to_ship": "yes" //TBD: passing this value for update triggers logistics workflow
+                            }
+                        }],
+                        "updated_at": new Date()
+                    },
+                    "update_target": "fulfillment"
+                }
+
+            }
+
+
+            payload = { message: { order: order }, context: confirmRequest.confirmRequest.context }
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postUpdateRequest(payload, trackRequest, logisticsMessageId, selectMessageId)
+            //}, 5000); //TODO move to config
+
+            return { status: 'ACK' }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async orderUpdateV2(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const updateMessageId = uuidv4();
+
+            const searchRequest = await productService.updateV2(payload);
+            //process select request and send it to protocol layer
+            this.postUpdateRequestV2(searchRequest, null, updateMessageId)
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async postUpdateRequestV2(searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            try {
+                let headers = {};
+                let httpRequest = new HttpRequest(
+                    config.get("sellerConfig").BPP_URI,
+                    `/protocol/v1/on_update`,
+                    'POST',
+                    searchRequest,
+                    headers
+                );
+                console.error("Here  -- 3")
+
+
+                await httpRequest.send();
+
+                console.error("Here  -- 4")
+
+
+            } catch (e) {
+                logger.error('error', `[Ondc Service] post http select response : `, e);
+                return e
+            }
+            console.error("Here  -- 5")
+
+            //2. wait async to fetch logistics responses
+
+            //async post request
+            // setTimeout(() => {
+            //     logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`,searchRequest);
+            //     this.buildSelectRequest(logisticsMessageId, selectMessageId)
+            // }, 10000); //TODO move to config
+            // console.error("Here  -- 6")
+
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+
+    async orderStatusUpdateItems(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    retailOrderId: payload.data.orderId
+                }
+            })
+            //
+            // console.log("")
+            //
+            // const logistics = confirmRequest.selectedLogistics;
+
+            const order = payload.data;
+            const selectMessageId = uuidv4();//payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+
+            // const trackRequest = {
+            //     "context": {
+            //         "domain": "nic2004:60232",
+            //         "action": "update",
+            //         "core_version": "1.1.0",
+            //         "bap_id": config.get("sellerConfig").BPP_ID,
+            //         "bap_uri": config.get("sellerConfig").BPP_URI,
+            //         "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+            //         "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+            //         "transaction_id": confirmRequest.logisticsTransactionId,
+            //         "message_id": logisticsMessageId,
+            //         "city": "std:080", //TODO: take it from request
+            //         "country": "IND",
+            //         "timestamp": new Date()
+            //     },
+            //     "message": {
+            //         "order": {
+            //             "id": order.orderId,
+            //             "state": "Accepted",
+            //             "items": logistics.items,
+            //             "@ondc/org/linked_order": {
+            //                 "items": [{ //TODO: get valid item from list and update the fields
+            //                     "descriptor": {
+            //                         "name": "KIT KAT"
+            //                     },
+            //                     "quantity": {
+            //                         "count": 2,
+            //                         "measure": {
+            //                             "value": 200,
+            //                             "unit": "Gram"
+            //                         }
+            //                     },
+            //                     "price": {
+            //                         "currency": "INR",
+            //                         "value": "200.00"
+            //                     },
+            //                     "category_id": "Grocery"
+            //                 }]
+            //             },
+            //             "fulfillments": [{
+            //                 "id": logistics.message.order.fulfillments[0].id,
+            //                 "type": logistics.message.order.fulfillments[0].type,
+            //                 "tracking": logistics.message.order.fulfillments[0].tracking,
+            //                 "tags": {
+            //                     "@ondc/org/order_ready_to_ship": "yes" //TBD: passing this value for update triggers logistics workflow
+            //                 }
+            //             }],
+            //             "updated_at": new Date()
+            //         },
+            //         "update_target": "fulfillment"
+            //     }
+            //
+            // }
+
+
+            // <<<<<<< v1.2.0-LSP
+            //             payload = {
+            //                 message: {order: order},
+            //                 context: {...confirmRequest.confirmRequest.context, message_id: uuidv4()}
+            //             };
+            // =======
+            payload = {
+                message: { order: order },
+                context: { ...confirmRequest?.confirmRequest?.context, message_id: uuidv4() }
+            };
+
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postUpdateItemRequest(payload, {}, logisticsMessageId, selectMessageId);
+            //}, 5000); //TODO move to config
+
+            return { status: 'ACK' }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async notifyItemUpdate(data = {}, req = {}) {
+        try {
+
+            const result = await productService.ondcGetForUpdate(data.itemId)
+            if (Object.keys(result).length > 0) {
+                this.postItemUpdate(result);
+            }
+            return { status: 'ACK' }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+
+    async postStatusRequest(statusRequest, logisticsMessageId, selectMessageId, unsoliciated, payload, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/status`,
+                        'POST',
+                        statusRequest,
+                        headers
+                    );
+
+
+                    await httpRequest.send();
+
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, statusRequest);
+                    this.buildStatusRequest(statusRequest, logisticsMessageId, selectMessageId, unsoliciated, payload, onNetworkLogistics)
+                }, 4000); //TODO move to config
+            } else {
+                this.buildStatusRequest(statusRequest, logisticsMessageId, selectMessageId, unsoliciated, payload, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async postUpdateRequest(orderData, searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            // try { //TODO: post this request for update items
+            //
+            //     console.log("------->>>",searchRequest,selectMessageId,logisticsMessageId)
+            //     console.log("------result ->>>",config.get("sellerConfig").BPP_URI )
+            //     let headers = {};
+            //     let httpRequest = new HttpRequest(
+            //         config.get("sellerConfig").BPP_URI,
+            //         `/protocol/logistics/v1/update`,
+            //         'POST',
+            //         searchRequest,
+            //         headers
+            //     );
+            //
+            //
+            //     let result = await httpRequest.send();
+            //     console.log("------result ->>>",result )
+            //
+            // } catch (e) {
+            //     logger.error('error', `[Ondc Service] post http select response : `, e);
+            //     return e
+            // }
+
+            //2. wait async to fetch logistics responses
+
+            //async post request
+            setTimeout(() => {
+                logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                this.buildUpdateRequest(orderData, logisticsMessageId, selectMessageId)
+            }, 3000); //TODO move to config
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    // async postUpdateItemRequest(orderData,searchRequest,logisticsMessageId,selectMessageId){
+    //
+    //     try{
+    //         //1. post http to protocol/logistics/v1/search
+    //
+    //         // try { //TODO: post this request for update items
+    //         //
+    //         //     console.log("------->>>",searchRequest,selectMessageId,logisticsMessageId)
+    //         //     console.log("------result ->>>",config.get("sellerConfig").BPP_URI )
+    //         //     let headers = {};
+    //         //     let httpRequest = new HttpRequest(
+    //         //         config.get("sellerConfig").BPP_URI,
+    //         //         `/protocol/logistics/v1/update`,
+    //         //         'POST',
+    //         //         searchRequest,
+    //         //         headers
+    //         //     );
+    //         //
+    //         //
+    //         //     let result = await httpRequest.send();
+    //         //     console.log("------result ->>>",result )
+    //         //
+    //         // } catch (e) {
+    //         //     logger.error('error', `[Ondc Service] post http select response : `, e);
+    //         //     return e
+    //         // }
+    //
+    //         //2. wait async to fetch logistics responses
+    //
+    //         //async post request
+    //         setTimeout(() => {
+    //             logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`,searchRequest);
+    //            this.buildUpdateRequest(orderData,logisticsMessageId, selectMessageId)
+    //         }, 5000); //TODO move to config
+    //     }catch (e){
+    //         logger.error('error', `[Ondc Service] post http select response : `, e);
+    //         return e
+    //     }
+    // }
+    async postUpdateItemRequest(orderData, searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            // try { //TODO: post this request for update items
+            //
+            //     console.log("------->>>",searchRequest,selectMessageId,logisticsMessageId)
+            //     console.log("------result ->>>",config.get("sellerConfig").BPP_URI )
+            //     let headers = {};
+            //     let httpRequest = new HttpRequest(
+            //         config.get("sellerConfig").BPP_URI,
+            //         `/protocol/logistics/v1/update`,
+            //         'POST',
+            //         searchRequest,
+            //         headers
+            //     );
+            //
+            //
+            //     let result = await httpRequest.send();
+            //     console.log("------result ->>>",result )
+            //
+            // } catch (e) {
+            //     logger.error('error', `[Ondc Service] post http select response : `, e);
+            //     return e
+            // }
+
+            //2. wait async to fetch logistics responses
+
+            //async post request
+            setTimeout(() => {
+                logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                this.buildUpdateItemRequest(orderData, logisticsMessageId, selectMessageId)
+            }, 3000); //TODO move to config
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async postItemUpdate(itemData) {
+
+        try {
+            //async post request
+            setTimeout(() => {
+                logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, itemData);
+                this.buildItemUpdate(itemData)
+            }, 1000); //TODO move to config
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async postUpdateOrderStatusRequest(orderData, searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            try { //TODO: post this request for update items
+
+                let headers = {};
+                let httpRequest = new HttpRequest(
+                    config.get("sellerConfig").BPP_URI,
+                    `/protocol/logistics/v1/update`,
+                    'POST',
+                    searchRequest,
+                    headers
+                );
+
+
+                await httpRequest.send();
+
+            } catch (e) {
+                logger.error('error', `[Ondc Service] post http select response : `, e);
+                return e
+            }
+
+            //2. wait async to fetch logistics responses
+
+            //async post request
+            setTimeout(() => {
+                logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                this.buildOrderStatusRequest(orderData, logisticsMessageId, selectMessageId)
+            }, 3000); //TODO move to config
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async orderCancel(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const confirmRequest = await ConfirmRequest.findOne({
+                where: {
+                    transactionId: payload.context.transaction_id,
+                    retailOrderId: payload.message.order_id
+                }
+            })
+
+            const logistics = confirmRequest.selectedLogistics;
+            let org = await productService.getOrgForOndc(confirmRequest.providerId);
+            const onNetworkLogistics = org.providerDetail.storeDetails?.onNetworkLogistics ?? true;
+
+            //const order = payload.message.order;
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+            let trackRequest = {};
+            if (onNetworkLogistics) {
+                trackRequest = {
+                    "context": {
+                        "domain": "nic2004:60232",
+                        "action": "cancel",
+                        "core_version": "1.2.0",
+                        "bap_id": config.get("sellerConfig").BPP_ID,
+                        "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                        "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                        "transaction_id": confirmRequest.logisticsTransactionId,
+                        "message_id": logisticsMessageId,
+                        "city": "std:080",
+                        "country": "IND",
+                        "timestamp": new Date(),
+                        "ttl": "PT30S"
+                    },
+                    "message":
+                    {
+                        "order_id": confirmRequest.orderId,
+                        "cancellation_reason_id": payload.message.cancellation_reason_id
+                    }
+
+                }
+            }
+
+
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postCancelRequest(trackRequest, logisticsMessageId, selectMessageId, onNetworkLogistics)
+            //}, 5000); //TODO move to config
+
+            return { "message": { "ack": { "status": "ACK" } } }
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async postCancelRequest(searchRequest, logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/cancel`,
+                        'POST',
+                        searchRequest,
+                        headers
+                    );
+
+
+                    await httpRequest.send();
+
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                    this.buildCancelRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+                }, 4000); //TODO move to config
+            } else {
+                this.buildCancelRequest(logisticsMessageId, selectMessageId, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async postSellerCancelRequest(cancelData, cancelRequest, logisticsMessageId, selectMessageId, onNetworkLogistics) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+            if (onNetworkLogistics) {
+                try {
+
+                    let headers = {};
+                    let httpRequest = new HttpRequest(
+                        config.get("sellerConfig").LOGISTICS_BAP_URI,
+                        `/cancel`,
+                        'POST',
+                        cancelRequest,
+                        headers
+                    );
+
+
+                    await httpRequest.send();
+
+                } catch (e) {
+                    logger.error('error', `[Ondc Service] post http select response : `, e);
+                    return e
+                }
+
+                //2. wait async to fetch logistics responses
+
+                //async post request
+                setTimeout(() => {
+                    logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, cancelRequest);
+                    this.buildSellerCancelRequest(cancelData, logisticsMessageId, selectMessageId, onNetworkLogistics)
+                }, 4000); //TODO move to config
+            } else {
+                this.buildSellerCancelRequest(cancelData, logisticsMessageId, selectMessageId, onNetworkLogistics)
+            }
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async buildStatusRequest(statusRequest, logisticsMessageId, retailMessageId, unsoliciated, payload, onNetworkLogistics) {
+
+        try {
+            //1. look up for logistics
+            let logistics_on_status = await this.getLogisticsDumps(logisticsMessageId, 'on_status')
+
+            if (logistics_on_status.data.length > 0) {
+                logistics_on_status = logistics_on_status.data.map((data) => { return data.request });
+            }
+            let retail_status = await this.getRetailDumps(retailMessageId, 'status')
+            if (retail_status.data.length > 0) {
+                retail_status = [retail_status.data[0].request]
+            }
+
+            console.log("statusRequest-----build>", statusRequest);
+            let statusResponse = await productService.productStatus({ retail_status, logistics_on_status }, retail_status, unsoliciated, payload, onNetworkLogistics)
+
+            //3. post to protocol layer
+            await this.postStatusResponse(statusResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+    async buildUpdateRequest(statusRequest, logisticsMessageId, initMessageId) {
+
+        try {
+            //1. look up for logistics
+            let logistics_on_update = await this.getLogisticsDumps(logisticsMessageId, 'on_update')
+
+            if (logistics_on_update.data.length > 0) {
+                logistics_on_update = logistics_on_search.data.map((data) => { return data.request });
+            }
+            let retail_update = await this.getRetailDumps(selectMessageId, 'update')
+            if (retail_update.data.length > 0) {
+                retail_update = [retail_update.data[0].request]
+            }
+            let statusResponse = await productService.productUpdate({ retail_update, logistics_on_update })
+
+            //3. post to protocol layer
+            await this.postUpdateResponse(statusResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+    async buildUpdateItemRequest(statusRequest, logisticsMessageId, initMessageId) {
+
+        try {
+            //1. look up for logistics
+            let logisticsResponse = await this.getLogistics(logisticsMessageId, initMessageId, 'update')
+            //2. if data present then build select response
+
+            let statusResponse = await productService.productUpdateItem(statusRequest, logisticsResponse)
+
+            //3. post to protocol layer
+            await this.postUpdateResponse(statusResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+    async buildItemUpdate(changeditem) {
+
+        try {
+            const org = await productService.getOrgForOndc(changeditem.organization)
+
+            let category = domainNameSpace.find((cat) => {
+                return cat.name === changeditem.productCategory
+            })
+
+            console.log({ statusRequest: changeditem })
+            changeditem.images = changeditem.images.map((item) => { return item.url })
+            let searchRequests = await SearchRequest.findAll({ where: { mode: 'start', domain: category.domain } })
+
+            for (let searchRequest of searchRequests) {
+
+                let context = {
+                    "domain": category.domain,
+                    "country": "IND",
+                    "city": searchRequest.searchRequest.context.city,
+                    "action": "on_search",
+                    "core_version": "1.2.0",
+                    "bap_id": searchRequest.bapId,
+                    "bap_uri": searchRequest.searchRequest.context.bap_uri,
+                    "bpp_uri": searchRequest.searchRequest.context.bpp_uri,
+                    "transaction_id": searchRequest.transactionId,
+                    "message_id": searchRequest.messageId,
+                    "timestamp": new Date(),
+                    "bpp_id": searchRequest.searchRequest.context.bpp_id,
+                    "ttl": "PT30S"
+                }
+                let data = {
+                    products: [{ ...org.providerDetail, items: [changeditem] }],
+                    customMenu: [],
+                }
+                let productSchema = await getProductsIncr({ data, context });
+                await this.postItemUpdateRequest(productSchema[0]);
+
+            }
+            console.log({ searchRequests })
+
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+    async buildOrderStatusRequest(statusRequest, logisticsMessageId, initMessageId) {
+
+        try {
+            //1. look up for logistics
+            let logisticsResponse = await this.getLogistics(logisticsMessageId, initMessageId, 'update')
+            //2. if data present then build select response
+
+            let statusResponse = await productService.productOrderStatus(logisticsResponse, statusRequest)
+
+            //3. post to protocol layer
+            await this.postStatusResponse(statusResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+
+    async buildCancelRequest(logisticsMessageId, retailMessageId, onNetworkLogistics) {
+
+        try {
+            //1. look up for logistics
+            let logistics_on_cancel = await this.getLogisticsDumps(logisticsMessageId, 'on_cancel')
+
+            if (logistics_on_cancel.data.length > 0) {
+                logistics_on_cancel = logistics_on_cancel.data.map((data) => { return data.request });
+            }
+            let retail_cancel = await this.getRetailDumps(retailMessageId, 'cancel')
+            if (retail_cancel.data.length > 0) {
+                retail_cancel = [retail_cancel.data[0].request]
+            }
+
+            let statusResponse = await productService.productCancel({ retail_cancel, logistics_on_cancel }, onNetworkLogistics)
+
+            //3. post to protocol layer
+            await this.postCancelResponse(statusResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+    async buildSellerCancelRequest(cancelData, logisticsMessageId, initMessageId, onNetworkLogistics) {
+
+        try {
+            //1. look up for logistics
+            let logisticsResponse = await this.getLogistics(logisticsMessageId, initMessageId, 'cancel')
+            //2. if data present then build select response
+
+            let statusResponse = await productService.productSellerCancel(cancelData, logisticsResponse, onNetworkLogistics)
+
+            //3. post to protocol layer
+            await this.postSellerCancelResponse(statusResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+
+    //return track response to protocol layer
+    async postStatusResponse(statusResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_status`,
+                'POST',
+                statusResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+    //return track response to protocol layer
+    async postUpdateResponse(statusResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_update`,
+                'POST',
+                statusResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+    async postItemUpdateRequest(statusResponse) {
+        try {
+            console.log('itemdata------------------------------------------>')
+            console.log({ itemdata: statusResponse })
+            let headers = { "X-ONDC-Search-Response": 'inc' }
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_search`,
+                'POST',
+                statusResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+    //return track response to protocol layer
+    async postCancelResponse(statusResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_cancel`,
+                'POST',
+                statusResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+
+    //return track response to protocol layer
+    async postSellerCancelResponse(statusResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").RETAIL_BPP_URI,
+                `/on_cancel`,
+                'POST',
+                statusResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+    async orderSupport(payload = {}, req = {}) {
+        try {
+            //const {criteria = {}, payment = {}} = req || {};
+
+            const selectRequest = await ConfirmRequest.findOne({
+                where: {
+                    transactionId: payload.message.ref_id
+                }
+            })
+
+            const logistics = selectRequest.selectedLogistics;
+
+            const selectMessageId = payload.context.message_id;
+            const logisticsMessageId = uuidv4(); //TODO: in future this is going to be array as packaging for single select request can be more than one
+
+            const trackRequest = {
+                "context": {
+                    "domain": "nic2004:60232",
+                    "action": "support",
+                    "core_version": "1.1.0",
+                    "bap_id": config.get("sellerConfig").BPP_ID,
+                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    "bpp_id": logistics.context.bpp_id,//STORED OBJECT
+                    "bpp_uri": logistics.context.bpp_uri, //STORED OBJECT
+                    "transaction_id": selectRequest.logisticsTransactionId,
+                    "message_id": logisticsMessageId,
+                    "city": "std:080",
+                    "country": "IND",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message":
+                {
+                    "ref_id": selectRequest.transactionId,
+                }
+
+            }
+
+
+            // setTimeout(this.getLogistics(logisticsMessageId,selectMessageId),3000)
+            //setTimeout(() => {
+            this.postSupportRequest(trackRequest, logisticsMessageId, selectMessageId)
+            //}, 5000); //TODO move to config
+
+            return trackRequest
+        } catch (err) {
+            throw err;
+        }
+    }
+
+    async logisticsUnsoliciatedHandler(payload = {}, req = {}) {
+        try {
+
+            // console.log({payload})
+            // console.log({req})
+
+            let requestQuery = {}
+
+            //TODO: check if bpp_id is matching
+            let requiredBppId = await redisService.get(`${payload.context.message_id}_request`);
+
+            if (requiredBppId === payload.context.bpp_id) {
+                console.log("***********************************bpp id found********************")
+                await redisService.set(`${payload.context.message_id}_response`, JSON.stringify(payload));
+            }
+
+            await redisService.set(`${payload.context.message_id}_${payload.context.action}`, JSON.stringify(payload));
+
+            // if (req.type === 'on_status') {
+
+            //     const confirmRequest = await ConfirmRequest.findOne({
+            //         where: {
+            //             retailOrderId: payload.message.order.id
+            //         }
+            //     })
+
+            //     requestQuery.retail_status = [confirmRequest.confirmRequest]
+            //     console.log("confirmRequest.onConfirmResponse", confirmRequest.confirmRequest)
+
+            //     requestQuery.logistics_on_status = [payload]
+            //     payload.message.order_id = payload.message.order.id
+            //     payload.context = confirmRequest.confirmRequest.context
+
+            //     let on_statusResponse = await productService.productStatus(requestQuery, {}, true, payload, true)
+
+            //     //3. post to protocol layer
+            //     await this.postStatusResponse(on_statusResponse);
+            // }
+            // if (req.type == 'on_cancel') {
+
+            // }
+
+            return 'ACK'
+        }
+        catch
+        (err) {
+            throw err;
+        }
+    }
+
+
+
+    async postSupportRequest(searchRequest, logisticsMessageId, selectMessageId) {
+
+        try {
+            //1. post http to protocol/logistics/v1/search
+
+            try {
+
+                let headers = {};
+                let httpRequest = new HttpRequest(
+                    config.get("sellerConfig").BPP_URI,
+                    `/protocol/logistics/v1/support`,
+                    'POST',
+                    searchRequest,
+                    headers
+                );
+
+
+                await httpRequest.send();
+
+            } catch (e) {
+                logger.error('error', `[Ondc Service] post http select response : `, e);
+                return e
+            }
+
+            //2. wait async to fetch logistics responses
+
+            //async post request
+            setTimeout(() => {
+                logger.log('info', `[Ondc Service] search logistics payload - timeout : param :`, searchRequest);
+                this.buildSupportRequest(logisticsMessageId, selectMessageId)
+            }, 4000); //TODO move to config
+        } catch (e) {
+            logger.error('error', `[Ondc Service] post http select response : `, e);
+            return e
+        }
+    }
+
+    async buildSupportRequest(logisticsMessageId, initMessageId) {
+
+        try {
+            //1. look up for logistics
+            let logisticsResponse = await this.getLogistics(logisticsMessageId, initMessageId, 'support')
+            //2. if data present then build select response
+
+            let selectResponse = await productService.productSupport(logisticsResponse)
+
+            //3. post to protocol layer
+            await this.postSupportResponse(selectResponse);
+
+        } catch (e) {
+            console.log(e)
+            return e
+        }
+    }
+
+
+    //return track response to protocol layer
+    async postSupportResponse(trackResponse) {
+        try {
+
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").BPP_URI,
+                `/protocol/v1/on_support`,
+                'POST',
+                trackResponse,
+                headers
+            );
+
+            console.log(httpRequest)
+
+            let result = await httpRequest.send();
+
+            return result.data
+
+        } catch (e) {
+            return e
+        }
+
+    }
+
+
+    async notifyStoreUpdate(data) {
+        if (data?.updateType === 'closed' || data?.updateType === 'disabled') {
+            let category = domainNameSpace.find((cat) => {
+                return cat.name === data.category
+            })
+            let time = {}
+            if (data.updateType === 'closed') {
+                time = {
+                    "label": "close",
+                    "timestamp": new Date(),
+                    "range":
+                    {
+                        "start": data?.storeTiming?.colsed?.from,
+                        "end": data?.storeTiming?.colsed?.to
+                    }
+                }
+            } else if (data.updateType === 'disabled') {
+                time = {
+                    "label": "disable",
+                    "timestamp": new Date()
+                }
+            }
+            let payload = {
+                "context":
+                {
+                    "domain": category.domain,
+                    "action": "on_search",
+                    "country": "IND",
+                    "city": "std:080",
+                    "core_version": "1.2.0",
+                    "bap_id": "ref-app-buyer-dev-internal.ondc.org",
+                    "bap_uri": "https://ref-app-buyer-dev-internal.ondc.org/protocol/v1",
+                    "bpp_uri": "https://ref-app-seller-dev-internal.ondc.org",
+                    "transaction_id": "323e2894-82b9-4577-bf7a-19bd85a5dcdf",
+                    "message_id": "bf1104c9-0ad3-4bcf-b45d-d74c38ea4764",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message":
+                {
+                    "catalog":
+                    {
+                        "bpp/providers":
+                            [
+                                {
+                                    "id": data.organization,
+                                    "locations":
+                                        [
+                                            {
+                                                "id": data.locationId,
+                                                "time": time
+                                            }
+                                        ]
+                                }
+                            ]
+                    }
+                }
+            }
+            this.postItemUpdateRequest(payload);
+        }
+        return { success: true };
+    }
+
+    async notifyOrgUpdate(data) {
+        let category = domainNameSpace.find((cat) => {
+            return cat.name === data.category
+        })
+        let payload = {
+            "context":
+            {
+                "domain": category.domain,
+                "action": "on_search",
+                "country": "IND",
+                "city": "std:080",
+                "core_version": "1.2.0",
+                "bap_id": "ref-app-buyer-dev-internal.ondc.org",
+                "bap_uri": "https://ref-app-buyer-dev-internal.ondc.org/protocol/v1",
+                "bpp_uri": "https://ref-app-seller-dev-internal.ondc.org",
+                "transaction_id": "323e2894-82b9-4577-bf7a-19bd85a5dcdf",
+                "message_id": "bf1104c9-0ad3-4bcf-b45d-d74c38ea4764",
+                "timestamp": new Date(),
+                "ttl": "PT30S"
+            },
+            "message":
+            {
+                "catalog":
+                {
+                    "bpp/providers":
+                        [
+                            {
+                                "id": data.organization,
+                                "time":
+                                {
+                                    "label": "disable",
+                                    "timestamp": new Date()
+                                }
+                            }
+                        ]
+                }
+            }
+        }
+        this.postItemUpdateRequest(payload);
+        return { success: true };
+    }
+
+}
+
+export default OndcService;
