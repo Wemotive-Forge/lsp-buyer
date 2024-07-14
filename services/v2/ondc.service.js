@@ -249,7 +249,7 @@ class OndcService {
             throw err;
         }
     }
-    async createLspOrder1(payload = {}, req = {}) {
+    async createLspOrder(payload = {}, req = {}) {
         try {
             logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
     
@@ -446,7 +446,7 @@ class OndcService {
                                                                         "list": [
                                                                             {
                                                                                 "code": "ready_to_ship",
-                                                                                "value": "no"
+                                                                                "value": ""+payload.readyToShip
                                                                             }
                                                                         ]
                                                                     },
@@ -673,7 +673,7 @@ class OndcService {
         }
     }
     
-    async  createLspOrder(payload = {}, req = {}) {
+    async  createLspOrder1(payload = {}, req = {}) {
         try {
             logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
     
@@ -1090,6 +1090,102 @@ async lspStatus(payload = {}, req = {}) {
     }
 }
 
+
+async lspTrack(payload = {}, req = {}) {
+    try {
+        logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
+
+        const selectMessageId = '';
+        const logisticsMessageId = uuidv4();
+        const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
+
+        let trackRequest = {}
+
+        const onNetworkLogistics = true;
+
+        console.log("logistics-->payload.retailOrderId", payload.retailOrderId);
+        let logisticsOnConfirm = await redisService.get(`${payload.retailOrderId}_on_confirm`);
+
+        let logistics = JSON.parse(logisticsOnConfirm);
+        console.log("logistics-->", (typeof logistics));
+        console.log("logistics-->x", logistics.context);
+        if (onNetworkLogistics) {
+            trackRequest = {
+                "context": {
+                    "domain": "nic2004:60232",
+                    "action": "track",
+                    "core_version": "1.2.0",
+                    "bap_id": config.get("sellerConfig").BPP_ID,
+                    "bap_uri": config.get("sellerConfig").LOGISTICS_BAP_URI,
+                    "bpp_id": logistics.context.bpp_id, // STORED OBJECT
+                    "bpp_uri": logistics.context.bpp_uri, // STORED OBJECT
+                    "transaction_id": logistics.context.transaction_id,
+                    "message_id": logisticsMessageId,
+                    "city": "std:080",
+                    "country": "IND",
+                    "timestamp": new Date(),
+                    "ttl": "PT30S"
+                },
+                "message": {
+                    "order_id": payload.retailOrderId,
+                }
+            }
+        }
+
+        console.log("set redis cache");
+
+        // Send the search request to the eCommerce protocol layer
+        try {
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").LOGISTICS_BAP_URI,
+                `/track`,
+                'POST',
+                trackRequest,
+                headers
+            );
+            await httpRequest.send();
+
+            const lspOnSearchPromise = new Promise(async (resolve, reject) => {
+                const interval = setInterval(async () => {
+                    const lspOnStatus = await redisService.get(`${logisticsMessageId}_on_track`);
+
+                    if (lspOnStatus) {
+                        clearInterval(interval);
+                        console.log("on_search found--->", lspOnStatus);
+
+                        // Resolve the promise with the response
+                        resolve(lspOnStatus);
+                    }
+                }, 1000);
+
+                // Set a timeout for the maximum wait time
+                setTimeout(() => {
+                    clearInterval(interval);
+                    console.log({ error: 'Timeout waiting for on_search response' });
+                    reject(new Error('Timeout waiting for on_search response'));
+                }, SEARCH_REQUEST_EXPIRATION);
+            });
+
+            // Await the promise to get the response
+            const lspOnSearchResponse = await lspOnSearchPromise;
+
+            // Do something with the response if needed
+            const contextTimeStamp = new Date();
+            const logisticsResponse = JSON.parse(lspOnSearchResponse);
+
+            // Return the response
+            return { "message": { "ack": { "status": "ACK" }, "response": logisticsResponse.message } };
+        } catch (error) {
+            console.log({ error: 'Error making search request' });
+            throw error;
+        }
+    } catch (err) {
+        logger.error('error', `[Ondc Service] search logistics payload - search logistics payload : param :`, err);
+        throw err;
+    }
+}
+
 async lspCancel(payload = {}, req = {}) {
     try {
         logger.log('info', `[Ondc Service] cancel logistics payload : param :`, payload);
@@ -1149,6 +1245,150 @@ async lspCancel(payload = {}, req = {}) {
             const lspOnCancelPromise = new Promise(async (resolve, reject) => {
                 const interval = setInterval(async () => {
                     const lspOnStatus = await redisService.get(`${logisticsMessageId}_on_cancel`);
+
+                    if (lspOnStatus) {
+                        clearInterval(interval);
+                        console.log("on_status found--->", lspOnStatus);
+
+                        // Resolve the promise with the response
+                        resolve(lspOnStatus);
+                    }
+                }, 1000);
+
+                // Set a timeout for the maximum wait time
+                setTimeout(() => {
+                    clearInterval(interval);
+                    console.log({ error: 'Timeout waiting for on_status response' });
+                    reject(new Error('Timeout waiting for on_status response'));
+                }, SEARCH_REQUEST_EXPIRATION);
+            });
+
+            // Await the promise to get the response
+            const lspOnCancelResponse = await lspOnCancelPromise;
+
+            // Do something with the response if needed
+            const contextTimeStamp = new Date();
+            const logisticsResponse = JSON.parse(lspOnCancelResponse);
+
+            // Return the response
+            return { "message": { "ack": { "status": "ACK" }, "response": logisticsResponse.message } };
+        } catch (error) {
+            console.log({ error: 'Error making cancel request' });
+            throw error;
+        }
+    } catch (err) {
+        logger.error('error', `[Ondc Service] cancel logistics payload - cancel logistics payload : param :`, err);
+        throw err;
+    }
+}
+
+
+async lspReadyToShip(payload = {}, req = {}) {
+    try {
+        logger.log('info', `[Ondc Service] cancel logistics payload : param :`, payload);
+
+        const selectMessageId = '';
+        const logisticsMessageId = uuidv4();
+        const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
+
+        let statusRequest = {};
+
+        const onNetworkLogistics = true;
+
+        console.log("logistics-->payload.retailOrderId", payload.retailOrderId);
+        let onConfirmString = await redisService.get(`${payload.retailOrderId}_on_confirm`);
+
+        let onConfirm = JSON.parse(onConfirmString);
+        console.log("logistics-->", (typeof onConfirm));
+        console.log("logistics-->x", onConfirm.context);
+        if (onNetworkLogistics) {
+            statusRequest = {
+                "context": {
+                  ...onConfirm.context,
+                  "action": "update",
+                  "message_id":  logisticsMessageId,
+                  "timestamp": new Date(),
+                  "ttl": "PT30S"
+                },
+                "message": {
+                  "update_target": "fulfillment",
+                  "order": {
+                    "id": payload.retai,
+                    "items": onConfirm.message.order.items.map(item => ({
+                      "id": item.id,
+                      "category_id": item.category_id,
+                      "descriptor": {
+                        "code": item.descriptor.code
+                      }
+                    })),
+                    "fulfillments": onConfirm.message.order.fulfillments.map(fulfillment => ({
+                      "id": fulfillment.id,
+                      "type": fulfillment.type,
+                      "@ondc/org/awb_no": fulfillment["@ondc/org/awb_no"],
+                      "start": {
+                        "instructions": {
+                          "code": fulfillment.start.instructions.code,
+                          "short_desc": fulfillment.start.instructions.short_desc,
+                          "long_desc": "additional instructions for pickup",
+                          "additional_desc": {
+                            "content_type": "text/html",
+                            "url": "https://reverse_qc_sop_form.htm"
+                          }
+                        },
+                        "authorization": {
+                          "type": "OTP",
+                          "token": "OTP code",
+                          "valid_from": "2023-06-06T12:00:00.000Z",
+                          "valid_to": "2023-06-06T14:00:00.000Z"
+                        }
+                      },
+                      "end": {
+                        "instructions": {
+                          "code": "2",
+                          "short_desc": "value of DCC",
+                          "long_desc": "additional instructions for delivery"
+                        }
+                      },
+                      "tags":
+                      [
+                        {
+                          "code":"state",
+                          "list":
+                          [
+                            {
+                              "code":"ready_to_ship",
+                              "value":"yes"
+                            }
+                          ]
+                        }
+                      ]
+            
+                    })),
+                    "@ondc/org/linked_order": onConfirm.message.order["@ondc/org/linked_order"],
+                    "updated_at": "2023-06-06T23:00:00.000Z"
+                  }
+                }
+              };
+              
+        }
+
+        console.log("set redis cache");
+
+        // Send the cancel request to the eCommerce protocol layer
+        try {
+            let headers = {};
+            let httpRequest = new HttpRequest(
+                config.get("sellerConfig").LOGISTICS_BAP_URI,
+                `/update`,
+                'POST',
+                statusRequest,
+                headers
+            );
+            await httpRequest.send();
+
+            const lspOnCancelPromise = new Promise(async (resolve, reject) => {
+                const interval = setInterval(async () => {
+                    const lspOnStatus = await redisService.get(`${logisticsMessageId}_on_update`);
 
                     if (lspOnStatus) {
                         clearInterval(interval);

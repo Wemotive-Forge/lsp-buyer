@@ -66,9 +66,14 @@ router.get('/order/:retailOrderId/status',
     ondcController.lspStatus);
 
 
+router.get('/order/:retailOrderId/track',
+    ondcController.lspTrack);
+
 router.post('/order/:retailOrderId/cancel',
     ondcController.lspCancel);
+    
 
-
+    router.post('/order/:retailOrderId/ship',
+        ondcController.lspReadyToShip);
 
 export default router;

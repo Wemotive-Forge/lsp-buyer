@@ -202,6 +202,25 @@ class OndcController {
     }
 
 
+    lspTrack(req, res, next) {
+        // const currentUserAccessToken = res.get('currentUserAccessToken');
+        ondcService.lspTrack({...req.params,...req.body}, req).then(data => {
+            res.json(data);
+        }).catch((err) => {
+            next(err);
+        });
+    }
+
+    
+    lspReadyToShip(req, res, next) {
+        // const currentUserAccessToken = res.get('currentUserAccessToken');
+        ondcService.lspReadyToShip({...req.params,...req.body}, req).then(data => {
+            res.json(data);
+        }).catch((err) => {
+            next(err);
+        });
+    }
+
 }
 
 module.exports = OndcController;
