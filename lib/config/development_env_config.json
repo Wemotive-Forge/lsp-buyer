@@ -32,7 +32,8 @@
       "acquire": 1000000,
       "idle": 10000,
       "evict": 10000
-    }
+    },
+    "REDIS":"redis://localhost:6379"
   },
   "email": {
     "transport": {
@@ -84,7 +85,7 @@
   },
   "sellerConfig": {
     "BPP_ID": "ref-app-seller-staging-v2.ondc.org",
-    "LOGISTICS_BAP_URI": "https://8807-59-88-22-220.ngrok-free.app/protocol",
+    "LOGISTICS_BAP_URI": "https://7b4b-117-195-20-236.ngrok-free.app/protocol",
     "BAP_ID": "ref-app-buyer-seller-v2.ondc.org",
     "RETAIL_BPP_URI": "https://8807-59-88-22-220.ngrok-free.app/protocol",
     "LOGISTICS_BAP_ID": "dev-ondc.shiprocket.in",

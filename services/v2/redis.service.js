@@ -1,8 +1,9 @@
 import { createClient } from 'redis';
-
+import config from "../../lib/config";
 class RedisService {
   constructor() {
-    this.client = createClient();
+    //database:REDIS
+    this.client = createClient({url:config.get("database").REDIS});
     this.client.on('error', (err) => console.log('Redis Client Error', err));
     this.client.connect().catch(console.error);
   }
