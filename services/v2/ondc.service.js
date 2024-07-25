@@ -253,7 +253,7 @@ class OndcService {
         try {
             logger.log('info', `[Ondc Service] search logistics payload : param :`, payload);
     
-            const logisticsMessageId = uuidv4();
+            let logisticsMessageId = uuidv4();
             const SEARCH_REQUEST_EXPIRATION = 30 * 1000; // 30 seconds timeout
     
             let searchRequest = {};
@@ -275,34 +275,72 @@ class OndcService {
                         "timestamp": new Date(),
                         "ttl": "PT30S"
                     },
-                    "message": {
-                        "intent": {
-                            "category": {
-                                "id": payload.deliveryOption
+                    message: {
+                        intent: {
+                            category: {
+                                id: payload.deliveryOption
                             },
-                            "provider": {
-                                "time": { //TODO: fix this from store timing
-                                    "days": "1,2,3,4,5,6,7",
-                                    "schedule": {
-                                        "holidays": []
+                            payment: {
+                                type: payload.payment_method
+                            },
+                            "@ondc/org/payload_details": {
+                                weight: {
+                                    unit: payload.order_details.weight.unit,
+                                    value: payload.order_details.weight.value
+                                },
+                                value: {
+                                    currency: payload.order_details.value.currency,
+                                    value: payload.order_details.value.value// Static or calculated value
+                                },
+                                dimensions: {
+                                    length: {
+                                        unit: payload.order_details.dimensions.length.unit,
+                                        value: payload.order_details.dimensions.length.value 
                                     },
-                                    "duration": "PT30M",
-                                    "range": {
-                                        "start": "1100",
-                                        "end": "2200"
+                                    breadth: {
+                                        unit: payload.order_details.dimensions.breadth.unit ,
+                                        value: payload.order_details.dimensions.breadth.value 
+                                    },
+                                    height: {
+                                        unit: payload.order_details.dimensions.height.unit,
+                                        value: payload.order_details.dimensions.height.value
                                     }
                                 },
+                                category: payload.order_details.category, // Static or determined value
+                                dangerous_goods: payload.order_details.dangerous_goods// Static or determined value
                             },
-                            "fulfillment": {
-                                "type": "Delivery",
-                                "start": { location: payload.start.location },
-                                "end": { location: payload.end.location }
+                            fulfillment: {
+                                type: "Delivery",
+                                start: {
+                                    location: {
+                                        gps: payload.start.location.gps,
+                                        address: {
+                                            area_code: payload.start.location.address.area_code
+                                        }
+                                    }
+                                },
+                                end: {
+                                    location: {
+                                        gps: payload.end.location.gps,
+                                        address: {
+                                            area_code: payload.end.location.address.area_code
+                                        }
+                                    }
+                                }
                             },
-                            "payment": {
-                                "type": payload.payment_method,
-                                "@ondc/org/collection_amount": payload.orderValue
-                            },
-                            "@ondc/org/payload_details": payload.order_details
+                            provider: {
+                                time: {
+                                    days: "1,2,3,4,5,6,7",
+                                    range: {
+                                        start: "0700",
+                                        end: "2355"
+                                    },
+                                    schedule: {
+                                        holidays: []
+                                    },
+                                    duration: "PT15M"
+                                }
+                            }
                         }
                     }
                 };
@@ -331,16 +369,18 @@ class OndcService {
                             clearInterval(interval);
                             console.log("on_search found--->", lspOnSearch);
     
-                            const contextTimeStamp = new Date();
+                            const billingContextTimeStamp = new Date();
                             const logistics = JSON.parse(lspOnSearch);
     
                             let fulfillment = logistics.message.catalog["bpp/providers"][0].fulfillments.find((element) => {
                                 return element.type === 'Delivery';
                             });
-                            let deliveryType = logistics.message?.catalog["bpp/providers"][0].items.find((element) => {
+                            let deliveryTypeInit = logistics.message?.catalog["bpp/providers"][0].items.find((element) => {
                                 return element.category_id === payload.deliveryOption && element.fulfillment_id === fulfillment.id;
                             });
     
+                            let billingDate = new Date();
+                            logisticsMessageId = uuidv4();
                             let initRequest = {
                                 "context": {
                                     "domain": "nic2004:60232",
@@ -354,7 +394,7 @@ class OndcService {
                                     "bpp_uri": logistics?.context?.bpp_uri, //STORED OBJECT TODO static for now
                                     "transaction_id": logistics?.context?.transaction_id, //TODO static for now
                                     "message_id": logisticsMessageId,
-                                    "timestamp": contextTimeStamp,
+                                    "timestamp": billingContextTimeStamp,
                                     "ttl": "PT30S"
                                 },
                                 "message": {
@@ -362,18 +402,82 @@ class OndcService {
                                         "provider": {
                                             "id": logistics.message?.catalog["bpp/providers"][0].id
                                         },
-                                        "items": [deliveryType],
-                                        "fulfillments": [{
-                                            "id": fulfillment.id,
-                                            "type": 'Delivery',
-                                            "start": payload.start,
-                                            "end": payload.end
-                                        }],
-                                        "billing": payload.billing,
+                                        "items": [
+                                            {
+                                                "category_id": deliveryTypeInit.category_id,
+                                                "descriptor": {
+                                                    "code": deliveryTypeInit.descriptor.code
+                                                },
+                                                "fulfillment_id": deliveryTypeInit.fulfillment_id,
+                                                "id": deliveryTypeInit.id
+                                            }],
+                                            fulfillments:[
+                                                {
+                                                    id:fulfillment.id,
+                                                    type:"Delivery",
+                                            "start":
+                                            {
+                                            location: {
+                                                    gps: payload.start.location.gps,
+                                                    address: {
+                                                        "name": payload.start.location.address.name,
+                                                        "building": payload.start.location.address.building,
+                                                        "locality": payload.start.location.address.locality,
+                                                        "city": payload.start.location.address.city,
+                                                        "state": payload.start.location.address.state,
+                                                        "country": payload.start.location.address.country,
+                                                        "area_code": payload.start.location.address.area_code
+                                                    }
+                                                },
+                                              "contact":
+                                              {
+                                                "phone": payload.start.contact.phone,
+                                                "email":payload.start.contact.email
+                                              }
+                                            },
+                                            "end":
+                                            {
+                                                location: {
+                                                    gps: payload.end.location.gps,
+                                                    address: {
+                                                        "name": payload.end.location.address.name,
+                                                        "building": payload.end.location.address.building,
+                                                        "locality": payload.end.location.address.locality,
+                                                        "city": payload.end.location.address.city,
+                                                        "state": payload.end.location.address.state,
+                                                        "country": payload.end.location.address.country,
+                                                        "area_code": payload.end.location.address.area_code
+                                                    }
+                                                },
+                                              "contact":
+                                              {
+                                                "phone": payload.end.contact.phone,
+                                                "email":payload.end.contact.email
+                                              }
+                                            },
+                                            }],
+                                        "billing":  {
+                                            "name":payload.billing.name,
+                                            "address":
+                                            {
+                                              "name":payload.billing.address.name,
+                                              "building":payload.billing.address.building,
+                                              "locality":payload.billing.address.locality,
+                                              "city":payload.billing.address.city,
+                                              "state":payload.billing.address.state,
+                                              "country":payload.billing.address.country,
+                                              "area_code":payload.billing.address.area_code
+                                            },
+                                            "tax_number":payload.billing.tax_number,
+                                            "phone":payload.billing.phone,
+                                            "email":payload.billing.email,
+                                            "created_at":billingContextTimeStamp,
+                                            "updated_at":billingContextTimeStamp
+                                          }
+                                    ,
                                         "payment": {
-                                            "type": 'POST-FULFILLMENT',
-                                            "@ondc/org/collection_amount": "0",
-                                            // "collected_by": "BPP"//order.payment['@ondc/org/settlement_details'] //TODO: need details of prepaid transactions to be settle for seller
+                                            "type": payload.payment_method,
+                                            "collected_by": "BAP"
                                         }
                                     }
                                 }
@@ -409,6 +513,7 @@ class OndcService {
                                             });
     
                                             const contextTimestamp = new Date();
+                                            logisticsMessageId = uuidv4();
                                             let confirmRequest = {
                                                 "context": {
                                                     "domain": "nic2004:60232",
@@ -431,15 +536,82 @@ class OndcService {
                                                         "state": "Created",
                                                         "provider": initLogistics.message.order.provider,
                                                         "items": [
-                                                            deliveryType
+                                                              {
+                                                                "id":deliveryType.id,
+                                                                "fulfillment_id":deliveryType.fulfillment_id,
+                                                                "category_id":deliveryType.category_id,
+                                                                "descriptor":
+                                                                {
+                                                                   "code":deliveryType.descriptor.code
+                                                                },
+                                                                "time":
+                                                                {
+                                                                  "label":deliveryTypeInit.time.label,
+                                                                  "duration":deliveryTypeInit.time.duration,
+                                                                  "timestamp":deliveryTypeInit.time.timestamp
+                                                                }
+                                                              }
+                                                            
                                                         ],
                                                         "quote": initLogistics.message.order.quote,
                                                         "fulfillments": [
                                                             {
                                                                 "id": fulfillment.id,
                                                                 "type": "Delivery",
-                                                                "start": payload.start,
-                                                                "end": payload.end,
+                                                                "start":
+                                                                {
+                                                                    "time":
+                                                                    {
+                                                                      "duration": payload.preparationTime
+                                                                    },
+                                                                    "person":
+            {
+              "name":payload.start.person.name
+            },
+
+                                                                location: {
+                                                                        gps: payload.start.location.gps,
+                                                                        address: {
+                                                                            "name": payload.start.location.address.name,
+                                                                            "building": payload.start.location.address.building,
+                                                                            "locality": payload.start.location.address.locality,
+                                                                            "city": payload.start.location.address.city,
+                                                                            "state": payload.start.location.address.state,
+                                                                            "country": payload.start.location.address.country,
+                                                                            "area_code": payload.start.location.address.area_code
+                                                                        }
+                                                                    },
+                                                                  "contact":
+                                                                  {
+                                                                    "phone": payload.start.contact.phone,
+                                                                    "email":payload.start.contact.email
+                                                                  }
+                                                                },
+                                                                "end":
+                                                                {
+                                                                    
+                                                                    "person":
+            {
+              "name":payload.end.person.name
+            },
+                                                                    location: {
+                                                                        gps: payload.end.location.gps,
+                                                                        address: {
+                                                                            "name": payload.end.location.address.name,
+                                                                            "building": payload.end.location.address.building,
+                                                                            "locality": payload.end.location.address.locality,
+                                                                            "city": payload.end.location.address.city,
+                                                                            "state": payload.end.location.address.state,
+                                                                            "country": payload.end.location.address.country,
+                                                                            "area_code": payload.end.location.address.area_code
+                                                                        }
+                                                                    },
+                                                                  "contact":
+                                                                  {
+                                                                    "phone": payload.end.contact.phone,
+                                                                    "email":payload.end.contact.email
+                                                                  }
+                                                                },
                                                                 "tags": [
                                                                     {
                                                                         "code": "state",
@@ -462,35 +634,55 @@ class OndcService {
                                                                 ]
                                                             }
                                                         ],
-                                                        "billing": payload.billing,
-                                                        "payment": {
-                                                            "type": "POST-FULFILLMENT",
-                                                            "@ondc/org/collection_amount": "0",
-                                                            "collected_by": "BPP"
+                                                        "billing":   {
+                                                            "name":payload.billing.name,
+                                                            "address":
+                                                            {
+                                                              "name":payload.billing.address.name,
+                                                              "building":payload.billing.address.building,
+                                                              "locality":payload.billing.address.locality,
+                                                              "city":payload.billing.address.city,
+                                                              "state":payload.billing.address.state,
+                                                              "country":payload.billing.address.country,
+                                                              "area_code":payload.billing.address.area_code
+                                                            },
+                                                            "tax_number":payload.billing.tax_number,
+                                                            "phone":payload.billing.phone,
+                                                            "email":payload.billing.email,
+                                                            "created_at":billingContextTimeStamp,
+                                                            "updated_at":billingContextTimeStamp
+                                                          },
+                                                          "payment": {
+                                                            "type": payload.payment_method,
+                                                            "collected_by": "BAP"
                                                         },
                                                         "@ondc/org/linked_order": {
                                                             "items": payload.items,
                                                             "provider": payload.provider,
                                                             "order": {
                                                                 "id": payload.retailOrderId,
-                                                                "weight": {
-                                                                    "unit": "kilogram",
-                                                                    "value": 5
+                                                                weight: {
+                                                                    unit: payload.order_details.weight.unit,
+                                                                    value: payload.order_details.weight.value
                                                                 },
-                                                                "dimensions": {
-                                                                    "length": {
-                                                                        "unit": "centimeter",
-                                                                        "value": 15
+                                                                // value: {
+                                                                //     currency: payload.order_details.value.currency,
+                                                                //     value: payload.order_details.value.value// Static or calculated value
+                                                                // },
+                                                                dimensions: {
+                                                                    length: {
+                                                                        unit: payload.order_details.dimensions.length.unit,
+                                                                        value: payload.order_details.dimensions.length.value 
                                                                     },
-                                                                    "breadth": {
-                                                                        "unit": "centimeter",
-                                                                        "value": 10
+                                                                    breadth: {
+                                                                        unit: payload.order_details.dimensions.breadth.unit ,
+                                                                        value: payload.order_details.dimensions.breadth.value 
                                                                     },
-                                                                    "height": {
-                                                                        "unit": "centimeter",
-                                                                        "value": 10
+                                                                    height: {
+                                                                        unit: payload.order_details.dimensions.height.unit,
+                                                                        value: payload.order_details.dimensions.height.value
                                                                     }
-                                                                }
+                                                                },
                                                             }
                                                         },
                                                         "tags": [
@@ -523,66 +715,67 @@ class OndcService {
                                                                     }
                                                                 ]
                                                             },
-                                                            {
-                                                                "code": "rto_address",
-                                                                "list": [
-                                                                    {
-                                                                        "code": "full_address",
-                                                                        "value": payload.end.location.full
-                                                                    },
-                                                                    {
-                                                                        "code": "short_address",
-                                                                        "value": payload.end.location.short
-                                                                    }
-                                                                ]
-                                                            },
-                                                            {
-                                                                "code": "fulfillment_details",
-                                                                "list": [
-                                                                    {
-                                                                        "code": "bap_id",
-                                                                        "value": config.get("sellerConfig").BPP_ID
-                                                                    },
-                                                                    {
-                                                                        "code": "provider",
-                                                                        "value": logistics.message.catalog["bpp/providers"][0].id
-                                                                    },
-                                                                    {
-                                                                        "code": "quote_id",
-                                                                        "value": initLogistics.message.order.quote.id
-                                                                    },
-                                                                    {
-                                                                        "code": "delivery_location",
-                                                                        "value": payload.end.location.full
-                                                                    }
-                                                                ]
-                                                            },
-                                                            {
-                                                                "code": "delivery_time_slot",
-                                                                "list": [
-                                                                    {
-                                                                        "code": "start_time",
-                                                                        "value": "1100"
-                                                                    },
-                                                                    {
-                                                                        "code": "end_time",
-                                                                        "value": "2200"
-                                                                    }
-                                                                ]
-                                                            },
-                                                            {
-                                                                "code": "fulfillment_tags",
-                                                                "list": [
-                                                                    {
-                                                                        "code": "item_weight",
-                                                                        "value": "5kg"
-                                                                    },
-                                                                    {
-                                                                        "code": "item_dimensions",
-                                                                        "value": "length 15cm, breadth 10cm, height 10cm"
-                                                                    }
-                                                                ]
-                                                            },
+                                                            // {
+                                                            //     "code": "rto_address",
+                                                            //     "list": [
+                                                            //         {
+                                                            //             "code": "full_address",
+                                                            //             "value": `${payload.start.location.address.name}, ${payload.start.location.building}, ${payload.start.location.locality}, ${payload.start.location.city}, ${payload.start.location.state}, ${payload.start.location.country}, ${payload.start.location.area_code}`,
+
+                                                            //         },
+                                                            //         {
+                                                            //             "code": "short_address",
+                                                            //             "value": `${payload.start.location.address.name}, ${payload.start.location.building}, ${payload.start.location.locality}, ${payload.start.location.city}, ${payload.start.location.state}, ${payload.start.location.country}, ${payload.start.location.area_code}`,
+                                                            //         }
+                                                            //     ]
+                                                            // },
+                                                            // {
+                                                            //     "code": "fulfillment_details",
+                                                            //     "list": [
+                                                            //         {
+                                                            //             "code": "bap_id",
+                                                            //             "value": config.get("sellerConfig").BPP_ID
+                                                            //         },
+                                                            //         {
+                                                            //             "code": "provider",
+                                                            //             "value": logistics.message.catalog["bpp/providers"][0].id
+                                                            //         },
+                                                            //         {
+                                                            //             "code": "quote_id",
+                                                            //             "value": initLogistics.message.order.quote.id
+                                                            //         },
+                                                            //         {
+                                                            //             "code": "delivery_location",
+                                                            //             "value": payload.end.location.full
+                                                            //         }
+                                                            //     ]
+                                                            // },
+                                                            // {
+                                                            //     "code": "delivery_time_slot",
+                                                            //     "list": [
+                                                            //         {
+                                                            //             "code": "start_time",
+                                                            //             "value": "1100"
+                                                            //         },
+                                                            //         {
+                                                            //             "code": "end_time",
+                                                            //             "value": "2200"
+                                                            //         }
+                                                            //     ]
+                                                            // },
+                                                            // {
+                                                            //     "code": "fulfillment_tags",
+                                                            //     "list": [
+                                                            //         {
+                                                            //             "code": "item_weight",
+                                                            //             "value": "5kg"
+                                                            //         },
+                                                            //         {
+                                                            //             "code": "item_dimensions",
+                                                            //             "value": "length 15cm, breadth 10cm, height 10cm"
+                                                            //         }
+                                                            //     ]
+                                                            // },
                                                             {
                                                                 "code": "bap_terms",
                                                                 "list": [
@@ -1301,13 +1494,14 @@ async lspReadyToShip(payload = {}, req = {}) {
         let onConfirm = JSON.parse(onConfirmString);
         console.log("logistics-->", (typeof onConfirm));
         console.log("logistics-->x", onConfirm.context);
+        let timeStamp = new Date();
         if (onNetworkLogistics) {
             statusRequest = {
                 "context": {
                   ...onConfirm.context,
                   "action": "update",
                   "message_id":  logisticsMessageId,
-                  "timestamp": new Date(),
+                  "timestamp": timeStamp,
                   "ttl": "PT30S"
                 },
                 "message": {
@@ -1327,28 +1521,17 @@ async lspReadyToShip(payload = {}, req = {}) {
                       "@ondc/org/awb_no": fulfillment["@ondc/org/awb_no"],
                       "start": {
                         "instructions": {
-                          "code": fulfillment.start.instructions.code,
-                          "short_desc": fulfillment.start.instructions.short_desc,
-                          "long_desc": "additional instructions for pickup",
-                          "additional_desc": {
-                            "content_type": "text/html",
-                            "url": "https://reverse_qc_sop_form.htm"
-                          }
-                        },
-                        "authorization": {
-                          "type": "OTP",
-                          "token": "OTP code",
-                          "valid_from": "2023-06-06T12:00:00.000Z",
-                          "valid_to": "2023-06-06T14:00:00.000Z"
+                            "code": "1",
+                            "short_desc": "contact",
+                            "long_desc": "please contact respective person and confirm before taking the parcel"
                         }
-                      },
-                      "end": {
+                    },
+                    "end": {
                         "instructions": {
-                          "code": "2",
-                          "short_desc": "value of DCC",
-                          "long_desc": "additional instructions for delivery"
+                            "code": "3",
+                            "long_desc": "No description"
                         }
-                      },
+                    },
                       "tags":
                       [
                         {
@@ -1365,7 +1548,7 @@ async lspReadyToShip(payload = {}, req = {}) {
             
                     })),
                     "@ondc/org/linked_order": onConfirm.message.order["@ondc/org/linked_order"],
-                    "updated_at": "2023-06-06T23:00:00.000Z"
+                    "updated_at": timeStamp
                   }
                 }
               };
@@ -3768,6 +3951,7 @@ async lspReadyToShip(payload = {}, req = {}) {
             //TODO: check if bpp_id is matching
             let requiredBppId = await redisService.get(`${payload.context.message_id}_request`);
 
+            console.log("***********************************bpp id ********************",requiredBppId)
             if (requiredBppId === payload.context.bpp_id) {
                 console.log("***********************************bpp id found********************")
                 await redisService.set(`${payload.context.message_id}_response`, JSON.stringify(payload));
