@@ -553,7 +553,7 @@ class OndcService {
                                                               }
                                                             
                                                         ],
-                                                        "quote": initLogistics.message.order.quote,
+                                                        "quote": {...initLogistics.message.order.quote,ttl:undefined},
                                                         "fulfillments": [
                                                             {
                                                                 "id": fulfillment.id,
@@ -618,7 +618,7 @@ class OndcService {
                                                                         "list": [
                                                                             {
                                                                                 "code": "ready_to_ship",
-                                                                                "value": ""+payload.readyToShip
+                                                                                "value": "no"//+payload.readyToShip
                                                                             }
                                                                         ]
                                                                     },
@@ -1507,7 +1507,7 @@ async lspReadyToShip(payload = {}, req = {}) {
                 "message": {
                   "update_target": "fulfillment",
                   "order": {
-                    "id": payload.retai,
+                    "id": payload.retailOrderId,
                     "items": onConfirm.message.order.items.map(item => ({
                       "id": item.id,
                       "category_id": item.category_id,
@@ -1522,7 +1522,7 @@ async lspReadyToShip(payload = {}, req = {}) {
                       "start": {
                         "instructions": {
                             "code": "1",
-                            "short_desc": "contact",
+                            "short_desc": payload.start.contact.phone,
                             "long_desc": "please contact respective person and confirm before taking the parcel"
                         }
                     },
